@@ -6,6 +6,9 @@
 //! Wayland.
 
 pub mod attention;
+pub mod logbuf;
+pub mod machine;
+pub mod proxy;
 pub mod status;
 mod wire;
 
