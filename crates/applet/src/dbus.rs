@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use futures_util::StreamExt;
 use openvpn3_dbus::attention::{ClientAttentionGroup, ClientAttentionType, PromptField, PromptKind};
@@ -291,7 +290,10 @@ impl Worker {
         self.forwarders.push(handle.abort_handle());
     }
 
-    async fn session_proxy(&self, path: &OwnedObjectPath) -> zbus::Result<SessionProxy<'_>> {
+    /// `'static` matters: the returned proxy outlives the borrow of `self`,
+    /// which is what lets a caller log into `self.logs` while holding it, and
+    /// lets each signal task own its own clone.
+    async fn session_proxy(&self, path: &OwnedObjectPath) -> zbus::Result<SessionProxy<'static>> {
         SessionProxy::builder(&self.connection)
             .path(path.clone())?
             .build()
@@ -303,12 +305,14 @@ impl Worker {
         let Ok(session) = self.session_proxy(path).await else {
             return;
         };
-        let session = Arc::new(session.into_owned());
         let key = path.to_string();
 
-        if let Ok(mut stream) = session.receive_status_change().await {
-            let (wire, key) = (wire.clone(), key.clone());
+        {
+            let (wire, key, session) = (wire.clone(), key.clone(), session.clone());
             let handle = tokio::spawn(async move {
+                let Ok(mut stream) = session.receive_status_change().await else {
+                    return;
+                };
                 while let Some(signal) = stream.next().await {
                     let Ok(args) = signal.args() else { continue };
                     let Ok(status) =
@@ -327,9 +331,12 @@ impl Worker {
             self.forwarders.push(handle.abort_handle());
         }
 
-        if let Ok(mut stream) = session.receive_attention_required().await {
-            let (wire, key) = (wire.clone(), key.clone());
+        {
+            let (wire, key, session) = (wire.clone(), key.clone(), session.clone());
             let handle = tokio::spawn(async move {
+                let Ok(mut stream) = session.receive_attention_required().await else {
+                    return;
+                };
                 while let Some(signal) = stream.next().await {
                     let Ok(args) = signal.args() else { continue };
                     let _ = wire
@@ -345,9 +352,12 @@ impl Worker {
             self.forwarders.push(handle.abort_handle());
         }
 
-        if let Ok(mut stream) = session.receive_log().await {
+        {
             let (wire, key) = (wire.clone(), key.clone());
             let handle = tokio::spawn(async move {
+                let Ok(mut stream) = session.receive_log().await else {
+                    return;
+                };
                 while let Some(signal) = stream.next().await {
                     let Ok(args) = signal.args() else { continue };
                     let _ = wire
@@ -513,6 +523,8 @@ impl Worker {
                     session_path,
                     responses,
                 } => {
+                    let mut failures = Vec::new();
+
                     if let Some(session) = self.proxy_for(&session_path).await {
                         for response in &responses {
                             if let Err(error) = session
@@ -524,16 +536,18 @@ impl Worker {
                                 )
                                 .await
                             {
-                                self.logs.note(
-                                    &session_path,
-                                    format!("Submitting credentials failed: {error}"),
-                                );
+                                failures.push(format!("Submitting credentials failed: {error}"));
                             }
                         }
                     }
-                    // R9: nothing is kept. The responses are dropped here and
-                    // the UI zeroes its own buffers on close.
+
+                    // R9: nothing is kept. Dropped as early as possible rather
+                    // than left to fall out of scope with the rest of the arm.
                     drop(responses);
+
+                    for failure in failures {
+                        self.logs.note(&session_path, failure);
+                    }
                 }
 
                 Command::Ready { session_path } => {
@@ -581,7 +595,7 @@ impl Worker {
         }
     }
 
-    async fn proxy_for(&self, session_path: &str) -> Option<SessionProxy<'_>> {
+    async fn proxy_for(&self, session_path: &str) -> Option<SessionProxy<'static>> {
         let path = OwnedObjectPath::try_from(session_path).ok()?;
         self.session_proxy(&path).await.ok()
     }
@@ -610,7 +624,7 @@ impl Worker {
             {
                 fields.push(
                     openvpn3_dbus::attention::InputRequest {
-                        r#type,
+                        type_: r#type,
                         group,
                         id,
                         name,

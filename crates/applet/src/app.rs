@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 
 use cosmic::app::{Core, Task};
-use cosmic::iced::window::Id;
+use cosmic::iced::platform_specific::shell::wayland::commands::popup::{
+    destroy_popup, get_popup,
+};
+use cosmic::iced::window::{self, Id};
 use cosmic::iced::{Length, Limits, Subscription};
-use cosmic::iced_runtime::core::window;
 use cosmic::widget;
 use cosmic::{Application, Element};
 use openvpn3_dbus::attention::PromptKind;
@@ -13,7 +15,7 @@ use openvpn3_dbus::machine::InputResponse;
 use openvpn3_dbus::status::ConnectionState;
 use tokio::sync::mpsc;
 
-use crate::dbus::{self, Profile, PromptSpec, Snapshot, UiCommand};
+use crate::dbus::{self, Profile, Snapshot, UiCommand};
 
 pub struct App {
     core: Core,
@@ -120,7 +122,7 @@ impl Application for App {
 
             Message::TogglePopup => {
                 return match self.popup.take() {
-                    Some(id) => cosmic::iced_runtime::platform_specific::wayland::popup::destroy_popup(id),
+                    Some(id) => destroy_popup(id),
                     None => {
                         let id = Id::unique();
                         self.popup = Some(id);
@@ -136,7 +138,7 @@ impl Application for App {
                             .min_width(320.0)
                             .min_height(80.0)
                             .max_height(700.0);
-                        cosmic::iced_runtime::platform_specific::wayland::popup::get_popup(settings)
+                        get_popup(settings)
                     }
                 };
             }
@@ -170,7 +172,12 @@ impl Application for App {
 
             Message::ImportRequested => {
                 let close = self.close_popup();
-                return Task::batch([close, Task::perform(pick_ovpn_file(), Message::ImportChosen)]);
+                return Task::batch([
+                    close,
+                    Task::perform(pick_ovpn_file(), |path| {
+                        cosmic::action::app(Message::ImportChosen(path))
+                    }),
+                ]);
             }
 
             Message::ImportChosen(Some(path)) => self.send(UiCommand::Import(path)),
@@ -263,9 +270,7 @@ impl App {
 
     fn close_popup(&mut self) -> Task<Message> {
         match self.popup.take() {
-            Some(id) => {
-                cosmic::iced_runtime::platform_specific::wayland::popup::destroy_popup(id)
-            }
+            Some(id) => destroy_popup(id),
             None => Task::none(),
         }
     }
@@ -277,20 +282,18 @@ impl App {
         if self.auth_window.is_some() {
             return Task::none();
         }
-        let id = Id::unique();
-        self.auth_window = Some(id);
-        cosmic::iced_runtime::window::open(window::Settings {
-            size: cosmic::iced::Size::new(420.0, 260.0),
+        let (id, task) = window::open(window::Settings {
+            size: cosmic::iced::Size::new(420.0, 280.0),
             resizable: false,
             ..Default::default()
-        })
-        .1
-        .map(|_| Message::Tick)
+        });
+        self.auth_window = Some(id);
+        task.then(|_| Task::none())
     }
 
     fn close_auth_window(&mut self) -> Task<Message> {
         match self.auth_window.take() {
-            Some(id) => cosmic::iced_runtime::window::close(id),
+            Some(id) => window::close(id).then(|_| Task::none()),
             None => Task::none(),
         }
     }
@@ -299,20 +302,18 @@ impl App {
         if self.log_window.is_some() {
             return Task::none();
         }
-        let id = Id::unique();
-        self.log_window = Some(id);
-        cosmic::iced_runtime::window::open(window::Settings {
+        let (id, task) = window::open(window::Settings {
             size: cosmic::iced::Size::new(720.0, 480.0),
             resizable: true,
             ..Default::default()
-        })
-        .1
-        .map(|_| Message::Tick)
+        });
+        self.log_window = Some(id);
+        task.then(|_| Task::none())
     }
 
     fn close_log_window(&mut self) -> Task<Message> {
         match self.log_window.take() {
-            Some(id) => cosmic::iced_runtime::window::close(id),
+            Some(id) => window::close(id).then(|_| Task::none()),
             None => Task::none(),
         }
     }
@@ -388,7 +389,7 @@ impl App {
     }
 
     /// R4/R5 — every profile, its state, and the right action for it.
-    fn view_profile_row(&self, profile: &Profile) -> Element<Message> {
+    fn view_profile_row<'a>(&'a self, profile: &'a Profile) -> Element<'a, Message> {
         let is_active = self.snapshot.active_config.as_deref() == Some(&profile.config_path);
 
         let (label, message) = if is_active {
@@ -459,7 +460,7 @@ impl App {
             let id = field.id;
             let mut input = widget::text_input(field.label.as_str(), value)
                 .on_input(move |v| Message::FieldChanged(id, v))
-                .on_submit(Message::SubmitPrompt);
+                .on_submit(|_| Message::SubmitPrompt);
 
             if field.masked {
                 input = input.password();
@@ -480,18 +481,13 @@ impl App {
 
     /// R13 — read-only, most recent attempt.
     fn view_log(&self) -> Element<Message> {
-        let body: Element<Message> = match &self.snapshot.log {
+        let body: Element<'_, Message> = match &self.snapshot.log {
             Some(lines) if !lines.is_empty() => {
-                let text = lines.join("\n");
-                widget::scrollable(
-                    // Selectable so a line can be copied into a bug report.
-                    widget::text_editor::TextEditor::new(&widget::text_editor::Content::with_text(
-                        &text,
-                    ))
-                    .height(Length::Fill),
-                )
-                .height(Length::Fill)
-                .into()
+                let mut column = widget::column::with_capacity(lines.len()).spacing(2);
+                for line in lines {
+                    column = column.push(widget::text::monotext(line));
+                }
+                widget::scrollable(column).height(Length::Fill).into()
             }
             // KTD4: a session adopted from outside never had log forwarding on.
             // Saying so beats a blank pane, which reads as a bug or a clean run.

@@ -16,7 +16,7 @@ zbus.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Pinned to a known-good revision rather than floating master. libcosmic moves
 # fast and this is a single-machine tool; a surprise build break costs more than
