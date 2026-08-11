@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Agent/tooling state
+.omc/
+.claude/worktrees/

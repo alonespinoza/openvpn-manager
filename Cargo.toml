@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/openvpn3-dbus", "crates/applet"]
+
+# Only the portable crate builds by default.
+#
+# The applet crate depends on libcosmic, which requires Wayland and only builds
+# on Linux. Keeping it out of default-members means `cargo build` and
+# `cargo test` work on any host — including macOS, where most of this project
+# was developed. Build the applet explicitly on the Pop!_OS target:
+#
+#     cargo build -p openvpn-manager-applet --release
+default-members = ["crates/openvpn3-dbus"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/alonespinoza/openvpn-manager"
+
+[workspace.dependencies]
+# Pinned deliberately (KTD1 risk row): this is a single-machine tool and there
+# is no reason to float a fast-moving desktop toolkit.
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures-util = "0.3"
+thiserror = "2"
+tracing = "0.1"
