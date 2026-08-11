@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.alonespinoza.OpenvpnManager</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>OpenVPN</name>
+  <summary>openvpn3 connection state and profile switching from the COSMIC panel</summary>
+
+  <description>
+    <p>
+      A COSMIC panel applet that shows openvpn3 connection state at a glance and
+      lets you connect, disconnect, and switch profiles from its menu. Importing
+      a .ovpn file happens from the same menu.
+    </p>
+    <p>
+      Two windows open only when needed: the credential prompt openvpn3 requires
+      mid-connect, and a read-only session log after a failed connect. No
+      credential, one-time code, or passphrase is ever stored.
+    </p>
+  </description>
+
+  <categories>
+    <category>Network</category>
+  </categories>
+
+  <url type="homepage">https://github.com/alonespinoza/openvpn-manager</url>
+  <url type="bugtracker">https://github.com/alonespinoza/openvpn-manager/issues</url>
+
+  <launchable type="desktop-id">io.github.alonespinoza.OpenvpnManager.desktop</launchable>
+
+  <provides>
+    <binary>openvpn-manager-applet</binary>
+  </provides>
+
+  <releases>
+    <release version="0.1.0" date="2026-08-11">
+      <description>
+        <p>Initial development release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

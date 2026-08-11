@@ -108,7 +108,7 @@ impl LogStore {
         let buffer = self
             .buffers
             .entry(path.to_owned())
-            .or_insert_with(VecDeque::new);
+            .or_default();
 
         if buffer.len() == capacity {
             buffer.pop_front();

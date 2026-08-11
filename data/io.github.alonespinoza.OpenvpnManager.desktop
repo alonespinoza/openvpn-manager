@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=OpenVPN
+Comment=Connect, disconnect, and switch openvpn3 profiles from the panel
+Type=Application
+Exec=openvpn-manager-applet
+Icon=network-vpn-symbolic
+Terminal=false
+Categories=Network;
+Keywords=VPN;OpenVPN;openvpn3;network;
+
+# Hidden from the app launcher — this only makes sense inside the panel.
+NoDisplay=true
+
+# What makes cosmic-settings offer it in the panel applet list, and what makes
+# cosmic-panel spawn it at session start (R16 / KTD9).
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-OverflowPriority=10
