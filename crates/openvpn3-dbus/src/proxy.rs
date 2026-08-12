@@ -6,6 +6,13 @@
 //! `uint8_t`/`uint16_t` internally but are marshalled as D-Bus `u` (u32), so
 //! the wire types below are u32 and narrowing happens in `crate::status` and
 //! `crate::attention`.
+//!
+//! Two naming conventions collide here, so every property carries an explicit
+//! `name`. openvpn3 declares its **properties** in snake_case
+//! (`AddProperty("session_created", ...)`) while zbus would PascalCase the Rust
+//! function name and ask for `SessionCreated` — which fails with
+//! `No such property`. Its **methods** and **signals** genuinely are PascalCase
+//! (`NewTunnel`, `StatusChange`), so those are left to the default mapping.
 
 use zbus::proxy;
 use zbus::zvariant::OwnedObjectPath;
@@ -44,16 +51,16 @@ pub trait Configuration {
 
     fn remove(&self) -> zbus::Result<()>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "name")]
     fn name(&self) -> zbus::Result<String>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "valid")]
     fn valid(&self) -> zbus::Result<bool>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "persistent")]
     fn persistent(&self) -> zbus::Result<bool>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "import_timestamp")]
     fn import_timestamp(&self) -> zbus::Result<u64>;
 }
 
@@ -125,27 +132,27 @@ pub trait Session {
 
     /// Last status as `(major, minor, message)`. Read at startup to adopt
     /// sessions that already exist.
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "status")]
     fn status(&self) -> zbus::Result<(u32, u32, String)>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "session_name")]
     fn session_name(&self) -> zbus::Result<String>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "config_name")]
     fn config_name(&self) -> zbus::Result<String>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "config_path")]
     fn config_path(&self) -> zbus::Result<OwnedObjectPath>;
 
     /// Unix epoch seconds. R3's uptime is computed from this rather than from a
     /// timer the applet starts, so an adopted session shows its true age.
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "session_created")]
     fn session_created(&self) -> zbus::Result<u64>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "device_name")]
     fn device_name(&self) -> zbus::Result<String>;
 
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property(emits_changed_signal = "false"), name = "backend_pid")]
     fn backend_pid(&self) -> zbus::Result<u32>;
 
     #[zbus(signal)]
