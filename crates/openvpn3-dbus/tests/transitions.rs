@@ -631,3 +631,40 @@ fn a_selection_made_during_a_stuck_teardown_still_connects_once_resolved() {
     );
     assert_eq!(m.awaiting_teardown(), None);
 }
+
+/// openvpn3 can ask in rounds. The close of the first prompt must not land
+/// after the second has been opened, or the user is left staring at a settled
+/// menu while the session waits for input nobody can give it.
+#[test]
+fn closing_the_first_prompt_cannot_clobber_a_second_one() {
+    let mut m = machine_starting("/cfg/a", "/s/1");
+    m.handle(Event::CredentialsRequired {
+        session_path: "/s/1".into(),
+        r#type: Type::Credentials,
+        group: Group::UserPassword,
+        message: String::new(),
+    });
+
+    let commands = m.handle(Event::PromptSubmitted {
+        session_path: "/s/1".into(),
+        responses: vec![InputResponse {
+            r#type: Type::Credentials,
+            group: Group::UserPassword,
+            id: 0,
+            value: "alice".into(),
+        }],
+    });
+
+    let close = commands
+        .iter()
+        .position(|c| matches!(c, Command::ClosePrompt));
+    let recheck = commands
+        .iter()
+        .position(|c| matches!(c, Command::CheckReady { .. }));
+
+    assert!(close.is_some() && recheck.is_some());
+    assert!(
+        close < recheck,
+        "the prompt must be closed before a re-check that may open another"
+    );
+}

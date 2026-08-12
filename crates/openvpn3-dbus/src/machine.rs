@@ -447,13 +447,17 @@ impl Machine {
         // Re-check rather than connecting blind: openvpn3 may have more than one
         // thing to ask for, and the reference client loops on Ready for exactly
         // that reason.
+        // ClosePrompt precedes the re-check deliberately. CheckReady can open a
+        // second prompt — openvpn3 often asks for a username and a password in
+        // separate rounds — and a trailing close would wipe out the prompt that
+        // had just been opened.
         vec![
             Command::ProvideInput {
                 session_path: session_path.clone(),
                 responses,
             },
-            Command::CheckReady { session_path },
             Command::ClosePrompt,
+            Command::CheckReady { session_path },
         ]
     }
 

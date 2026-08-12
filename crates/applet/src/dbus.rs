@@ -738,6 +738,10 @@ impl Worker {
                                 )
                                 .await
                             {
+                                tracing::warn!(
+                                    session = %session_path, id = response.id, %error,
+                                    "UserInputProvide rejected"
+                                );
                                 failures.push(format!("Submitting credentials failed: {error}"));
                             }
                         }
@@ -779,7 +783,10 @@ impl Worker {
     async fn check_ready(&mut self, session_path: &str) -> Option<Event> {
         let session = self.proxy_for(session_path).await?;
 
-        match session.ready().await {
+        let ready = session.ready().await;
+        tracing::debug!(session = %session_path, ok = ready.is_ok(), ?ready, "Ready check");
+
+        match ready {
             Ok(()) => Some(Event::SessionReady {
                 session_path: session_path.to_owned(),
             }),
@@ -867,9 +874,14 @@ impl Worker {
         };
 
         let (type_wire, group_wire) = (u8::from(r#type) as u32, u8::from(group) as u32);
-        let Ok(ids) = session.user_input_queue_check(type_wire, group_wire).await else {
-            return Vec::new();
+        let ids = match session.user_input_queue_check(type_wire, group_wire).await {
+            Ok(ids) => ids,
+            Err(error) => {
+                tracing::warn!(%session_path, ?r#type, ?group, %error, "input queue check failed");
+                return Vec::new();
+            }
         };
+        tracing::debug!(%session_path, ?r#type, ?group, count = ids.len(), "input queue items");
 
         let mut fields = Vec::new();
         for id in ids {
