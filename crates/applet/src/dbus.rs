@@ -81,12 +81,17 @@ enum Wire {
 }
 
 pub async fn run(mut commands: mpsc::Receiver<UiCommand>, snapshots: mpsc::Sender<Snapshot>) {
-    let connection = match zbus::Connection::session().await {
+    // The system bus, not the session bus. openvpn3's services default to
+    // SYSTEM (session is a debug-only `--use-session-bus` flag), and access for
+    // unprivileged users comes from its D-Bus policy in
+    // /etc/dbus-1/system.d/net.openvpn.v3.conf — which is why R15 holds without
+    // sudo or a root helper.
+    let connection = match zbus::Connection::system().await {
         Ok(connection) => connection,
         Err(error) => {
             let _ = snapshots
                 .send(Snapshot {
-                    unavailable: Some(format!("No D-Bus session bus: {error}")),
+                    unavailable: Some(format!("Cannot reach the D-Bus system bus: {error}")),
                     ..Default::default()
                 })
                 .await;
@@ -215,7 +220,8 @@ impl Worker {
 
     fn mark_unavailable(&mut self, error: zbus::Error) {
         self.unavailable = Some(format!(
-            "openvpn3 is not reachable ({error}). Is openvpn3-linux installed and running?"
+            "openvpn3 is not reachable on the D-Bus system bus ({error}). \
+             Check that openvpn3-linux is installed and that `openvpn3 configs-list` works."
         ));
         self.profiles.clear();
     }
