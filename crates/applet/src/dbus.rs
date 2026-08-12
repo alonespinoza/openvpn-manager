@@ -342,7 +342,7 @@ impl Worker {
                     let _ = wire
                         .send(Wire::Attention {
                             session: key.clone(),
-                            r#type: args.type_,
+                            r#type: args.r#type,
                             group: args.group,
                             message: args.message.clone(),
                         })

@@ -293,7 +293,10 @@ impl App {
 
     fn close_auth_window(&mut self) -> Task<Message> {
         match self.auth_window.take() {
-            Some(id) => window::close(id).then(|_| Task::none()),
+            // `close` is generic over the message type: it emits nothing, so it
+            // unifies with our task type directly. Adding a `.then` only made
+            // the closure's parameter unconstrained.
+            Some(id) => window::close(id),
             None => Task::none(),
         }
     }
@@ -313,7 +316,10 @@ impl App {
 
     fn close_log_window(&mut self) -> Task<Message> {
         match self.log_window.take() {
-            Some(id) => window::close(id).then(|_| Task::none()),
+            // `close` is generic over the message type: it emits nothing, so it
+            // unifies with our task type directly. Adding a `.then` only made
+            // the closure's parameter unconstrained.
+            Some(id) => window::close(id),
             None => Task::none(),
         }
     }
