@@ -40,6 +40,12 @@ copyright = "2026 Alonso Espinoza"
 license-file = ["../../LICENSE", "0"]
 section = "net"
 priority = "optional"
+
+# No Debian revision suffix. cargo-deb defaults to appending -1, which produces
+# openvpn-manager_1.0.0-1_amd64.deb. The revision exists to version the
+# packaging separately from upstream, and here they are the same thing — so the
+# filename should just be the version people are looking for.
+revision = ""
 extended-description = """\
 A COSMIC panel applet for openvpn3. Shows connection state at a glance and \
 lets you connect, disconnect, switch profiles, and import a .ovpn from the \
