@@ -188,3 +188,48 @@ fn unknown_attention_values_are_rejected() {
     assert!(Type::try_from(77u8).is_err());
     assert!(Group::try_from(77u8).is_err());
 }
+
+// -------------------------------------------------------------- Field identity
+
+/// Queue ids are numbered within a group, so the same id appears in several
+/// groups. A username and a one-time code are both id 0, and treating id as the
+/// field's identity made them one field sharing one value.
+#[test]
+fn fields_from_different_groups_are_not_the_same_field() {
+    let username = InputRequest {
+        type_: Type::Credentials,
+        group: Group::UserPassword,
+        id: 0,
+        name: "username".into(),
+        description: "Username".into(),
+        hidden_input: false,
+    };
+    let otp = InputRequest {
+        type_: Type::Credentials,
+        group: Group::ChallengeStatic,
+        id: 0,
+        name: "static_challenge".into(),
+        description: "Enter your code".into(),
+        hidden_input: true,
+    };
+
+    assert_eq!(username.id, otp.id, "the collision this guards against is real");
+    assert_ne!(
+        username.to_field().key(),
+        otp.to_field().key(),
+        "same id in different groups must not collapse into one field"
+    );
+}
+
+#[test]
+fn fields_within_a_group_stay_distinct() {
+    let make = |id, name: &str| InputRequest {
+        type_: Type::Credentials,
+        group: Group::UserPassword,
+        id,
+        name: name.into(),
+        description: String::new(),
+        hidden_input: false,
+    };
+    assert_ne!(make(0, "username").to_field().key(), make(1, "password").to_field().key());
+}

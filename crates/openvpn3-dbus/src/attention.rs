@@ -141,6 +141,20 @@ pub struct PromptField {
     pub masked: bool,
 }
 
+/// Identifies one field uniquely across a whole form.
+///
+/// The id alone is not enough. `UserInputQueueCheck` numbers items *within* a
+/// group, so a username in `USER_PASSWORD` and a one-time code in
+/// `CHALLENGE_STATIC` are both id 0. Keying UI state by id alone made them the
+/// same field, and whatever was typed in one appeared in the other.
+pub type FieldKey = (u8, u8, u32);
+
+impl PromptField {
+    pub fn key(&self) -> FieldKey {
+        (u8::from(self.r#type), u8::from(self.group), self.id)
+    }
+}
+
 impl InputRequest {
     pub fn to_field(&self) -> PromptField {
         // openvpn3 does not always populate the description; falling back to the

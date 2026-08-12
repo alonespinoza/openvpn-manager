@@ -17,7 +17,7 @@ use cosmic::iced::window::Id;
 use cosmic::iced::{Length, Limits, Subscription};
 use cosmic::widget;
 use cosmic::{Application, Element};
-use openvpn3_dbus::attention::PromptKind;
+use openvpn3_dbus::attention::{FieldKey, PromptKind};
 use openvpn3_dbus::machine::InputResponse;
 use openvpn3_dbus::status::ConnectionState;
 use tokio::sync::mpsc;
@@ -48,8 +48,11 @@ pub struct App {
     /// irreversible action one click away in a menu is too easy to hit.
     delete_armed: bool,
 
-    /// Prompt field values, keyed by input-queue id. Cleared on close (R9).
-    field_values: HashMap<u32, String>,
+    /// Prompt field values, keyed by (type, group, id) — not by id alone.
+    /// Queue ids are numbered within a group, so a username and a one-time code
+    /// are both id 0 and keying by id made them one field sharing one value.
+    /// Cleared on close (R9).
+    field_values: HashMap<FieldKey, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +80,7 @@ pub enum Message {
     DisarmDelete,
     ConfirmDelete,
 
-    FieldChanged(u32, String),
+    FieldChanged(FieldKey, String),
     SubmitPrompt,
     CancelPrompt,
 
@@ -249,8 +252,8 @@ impl Application for App {
                 self.page = Page::Menu;
             }
 
-            Message::FieldChanged(id, value) => {
-                self.field_values.insert(id, value);
+            Message::FieldChanged(key, value) => {
+                self.field_values.insert(key, value);
             }
 
             Message::SubmitPrompt => {
@@ -266,7 +269,11 @@ impl Application for App {
                         r#type: field.r#type,
                         group: field.group,
                         id: field.id,
-                        value: self.field_values.get(&field.id).cloned().unwrap_or_default(),
+                        value: self
+                            .field_values
+                            .get(&field.key())
+                            .cloned()
+                            .unwrap_or_default(),
                     })
                     .collect();
 
@@ -585,13 +592,13 @@ impl App {
         for field in &prompt.fields {
             let value = self
                 .field_values
-                .get(&field.id)
+                .get(&field.key())
                 .map(String::as_str)
                 .unwrap_or_default();
-            let id = field.id;
+            let key = field.key();
 
             let input = widget::text_input(field.label.as_str(), value)
-                .on_input(move |v| Message::FieldChanged(id, v))
+                .on_input(move |v| Message::FieldChanged(key, v))
                 .on_submit(|_| Message::SubmitPrompt);
 
             content = content.push(if field.masked {
