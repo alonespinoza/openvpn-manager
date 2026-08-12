@@ -39,11 +39,27 @@ fn machine_connected_to(config: &str, session: &str) -> Machine {
         session_path: session.into(),
         config_path: config.into(),
     });
+    m.handle(Event::SessionReady {
+        session_path: session.into(),
+    });
     m.handle(Event::StatusChanged {
         session_path: session.into(),
         status: connected(),
     });
     assert_eq!(m.state(), ConnectionState::Connected);
+    m
+}
+
+/// Drive a fresh machine to "session created, awaiting readiness".
+fn machine_starting(config: &str, session: &str) -> Machine {
+    let mut m = Machine::new();
+    m.handle(Event::ProfileSelected {
+        config_path: config.into(),
+    });
+    m.handle(Event::SessionCreated {
+        session_path: session.into(),
+        config_path: config.into(),
+    });
     m
 }
 
@@ -69,11 +85,96 @@ fn log_forwarding_is_enabled_before_connect() {
             Command::EnableLogForward {
                 session_path: "/s/1".into()
             },
-            Command::Connect {
+            Command::CheckReady {
                 session_path: "/s/1".into()
             },
         ],
-        "LogForward must precede Connect"
+        "LogForward must precede readiness, and Connect must wait for it"
+    );
+}
+
+// -------------------------------------------------- Readiness before connect
+
+/// openvpn3 reports a missing password by failing Ready, not by emitting
+/// AttentionRequired. Connecting without checking is why username/password
+/// profiles silently stalled with nothing asked of the user.
+#[test]
+fn connect_waits_for_readiness() {
+    let mut m = machine_starting("/cfg/a", "/s/1");
+
+    let commands = m.handle(Event::SessionReady {
+        session_path: "/s/1".into(),
+    });
+
+    assert_eq!(
+        commands,
+        vec![Command::Connect {
+            session_path: "/s/1".into()
+        }]
+    );
+}
+
+#[test]
+fn missing_credentials_open_the_prompt_and_do_not_connect() {
+    let mut m = machine_starting("/cfg/a", "/s/1");
+
+    let commands = m.handle(Event::CredentialsRequired {
+        session_path: "/s/1".into(),
+        r#type: Type::Credentials,
+        group: Group::UserPassword,
+        message: String::new(),
+    });
+
+    assert_eq!(m.state(), ConnectionState::AuthPending);
+    assert!(
+        matches!(commands.as_slice(), [Command::OpenPrompt { .. }]),
+        "expected a prompt, got {commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::Connect { .. })),
+        "a session missing credentials must not be connected"
+    );
+}
+
+/// openvpn3 can want more than one thing, which is why the reference client
+/// loops on Ready rather than connecting straight after providing input.
+#[test]
+fn submitting_credentials_rechecks_readiness_rather_than_connecting_blind() {
+    let mut m = machine_starting("/cfg/a", "/s/1");
+    m.handle(Event::CredentialsRequired {
+        session_path: "/s/1".into(),
+        r#type: Type::Credentials,
+        group: Group::UserPassword,
+        message: String::new(),
+    });
+
+    let commands = m.handle(Event::PromptSubmitted {
+        session_path: "/s/1".into(),
+        responses: vec![InputResponse {
+            r#type: Type::Credentials,
+            group: Group::UserPassword,
+            id: 0,
+            value: "hunter2".into(),
+        }],
+    });
+
+    let provide = commands
+        .iter()
+        .position(|c| matches!(c, Command::ProvideInput { .. }));
+    let recheck = commands
+        .iter()
+        .position(|c| matches!(c, Command::CheckReady { .. }));
+
+    assert!(provide.is_some(), "input must be provided");
+    assert!(recheck.is_some(), "readiness must be re-checked");
+    assert!(provide < recheck, "provide input before re-checking");
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::Connect { .. })),
+        "connecting straight after input skips the second thing openvpn3 may want"
     );
 }
 
@@ -412,11 +513,11 @@ fn submitting_the_prompt_provides_input_then_confirms_readiness() {
         .position(|c| matches!(c, Command::ProvideInput { .. }));
     let ready = commands
         .iter()
-        .position(|c| matches!(c, Command::Ready { .. }));
+        .position(|c| matches!(c, Command::CheckReady { .. }));
     assert!(provide.is_some() && ready.is_some());
     assert!(
         provide < ready,
-        "input must be provided before Ready is called"
+        "input must be provided before readiness is re-checked"
     );
 }
 

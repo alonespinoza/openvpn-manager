@@ -752,12 +752,11 @@ impl Worker {
                     }
                 }
 
-                Command::Ready { session_path } => {
-                    if let Some(session) = self.proxy_for(&session_path).await {
-                        if let Err(error) = session.ready().await {
-                            self.logs
-                                .note(&session_path, format!("Backend not ready: {error}"));
-                        }
+                Command::CheckReady { session_path } => {
+                    let next = self.check_ready(&session_path).await;
+                    if let Some(event) = next {
+                        let commands = self.machine.handle(event);
+                        Box::pin(self.execute(commands, wire)).await;
                     }
                 }
 
@@ -765,6 +764,60 @@ impl Worker {
                     session_path,
                     message,
                 } => self.logs.note(&session_path, message),
+            }
+        }
+    }
+
+    /// Ask the backend whether it can connect, and find out what it wants if not.
+    ///
+    /// This is the path a username/password profile takes. openvpn3 reports a
+    /// missing password by failing `Ready` with "Missing user credentials" and
+    /// queueing what it needs — not by emitting `AttentionRequired`, which is
+    /// for challenges that arise later in the handshake. The reference client
+    /// loops on `Ready` for the same reason: there may be more than one thing to
+    /// ask for.
+    async fn check_ready(&mut self, session_path: &str) -> Option<Event> {
+        let session = self.proxy_for(session_path).await?;
+
+        match session.ready().await {
+            Ok(()) => Some(Event::SessionReady {
+                session_path: session_path.to_owned(),
+            }),
+            Err(error) => {
+                // Ask the queue what it wants rather than parsing the error
+                // text; the message is for humans and varies by version.
+                let Ok(pairs) = session.user_input_queue_get_type_group().await else {
+                    self.logs
+                        .note(session_path, format!("Backend not ready: {error}"));
+                    return None;
+                };
+
+                let Some((r#type, group)) = pairs.first().copied() else {
+                    // Not ready, and nothing queued to fix it. Report it rather
+                    // than waiting on a request that is never coming.
+                    self.logs
+                        .note(session_path, format!("Backend not ready: {error}"));
+                    return None;
+                };
+
+                match (
+                    ClientAttentionType::try_from(r#type as u8),
+                    ClientAttentionGroup::try_from(group as u8),
+                ) {
+                    (Ok(r#type), Ok(group)) => Some(Event::CredentialsRequired {
+                        session_path: session_path.to_owned(),
+                        r#type,
+                        group,
+                        message: String::new(),
+                    }),
+                    _ => {
+                        self.logs.note(
+                            session_path,
+                            format!("Unrecognised credential request: type={type} group={group}"),
+                        );
+                        None
+                    }
+                }
             }
         }
     }

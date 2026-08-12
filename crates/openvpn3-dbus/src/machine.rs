@@ -22,6 +22,17 @@ pub enum Event {
         session_path: String,
         config_path: String,
     },
+    /// `Ready` succeeded — the backend has everything it needs to connect.
+    SessionReady { session_path: String },
+    /// `Ready` reported missing credentials, and the input queue says what for.
+    /// This is how a username/password profile asks: up front, not as an
+    /// `AttentionRequired` signal mid-handshake.
+    CredentialsRequired {
+        session_path: String,
+        r#type: ClientAttentionType,
+        group: ClientAttentionGroup,
+        message: String,
+    },
     /// A session the applet did not start, seen at startup or via
     /// `SessionManagerEvent` (AE4).
     ExternalSessionSeen {
@@ -92,8 +103,11 @@ pub enum Command {
         session_path: String,
         responses: Vec<InputResponse>,
     },
-    /// Confirm the backend can proceed after input was provided.
-    Ready {
+    /// Call `Ready` and report back — either `SessionReady` or, when it says
+    /// credentials are missing, `CredentialsRequired`. Connect must never be
+    /// issued before this succeeds, or a profile needing a password silently
+    /// stalls with nothing asked of the user.
+    CheckReady {
         session_path: String,
     },
     /// Write a line into this session's log buffer.
@@ -164,6 +178,13 @@ impl Machine {
                 session_path,
                 config_path,
             } => self.on_session_created(session_path, config_path),
+            Event::SessionReady { session_path } => self.on_session_ready(session_path),
+            Event::CredentialsRequired {
+                session_path,
+                r#type,
+                group,
+                message,
+            } => self.on_attention(session_path, r#type, group, message),
             Event::ExternalSessionSeen {
                 session_path,
                 config_path,
@@ -239,14 +260,24 @@ impl Machine {
         });
         self.state = ConnectionState::Connecting;
 
-        // Ordering is load-bearing (KTD4): forwarding has to be on before the
-        // handshake starts, or a failed connect has no log to show.
+        // Ordering is load-bearing twice over. Log forwarding has to be on
+        // before the handshake starts (KTD4) or a failed connect has no log to
+        // show; and readiness has to be confirmed before Connect, because that
+        // is how openvpn3 reports that a profile needs a password.
         vec![
             Command::EnableLogForward {
                 session_path: session_path.clone(),
             },
-            Command::Connect { session_path },
+            Command::CheckReady { session_path },
         ]
+    }
+
+    fn on_session_ready(&mut self, session_path: String) -> Vec<Command> {
+        if self.active_session() != Some(session_path.as_str()) {
+            return vec![];
+        }
+        self.state = ConnectionState::Connecting;
+        vec![Command::Connect { session_path }]
     }
 
     fn on_external_session(
@@ -413,12 +444,15 @@ impl Machine {
         self.prompt_open = false;
         self.state = ConnectionState::Connecting;
 
+        // Re-check rather than connecting blind: openvpn3 may have more than one
+        // thing to ask for, and the reference client loops on Ready for exactly
+        // that reason.
         vec![
             Command::ProvideInput {
                 session_path: session_path.clone(),
                 responses,
             },
-            Command::Ready { session_path },
+            Command::CheckReady { session_path },
             Command::ClosePrompt,
         ]
     }
