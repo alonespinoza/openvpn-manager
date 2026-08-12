@@ -1,12 +1,19 @@
-//! The libcosmic applet: panel icon, menu popup, and the two on-demand windows.
+//! The libcosmic applet: panel icon and its popup.
+//!
+//! **KTD6 was revised here.** The plan called for the credential prompt and log
+//! to be ordinary toplevel windows, so a half-typed one-time code could not be
+//! lost to a stray click. In practice a panel applet cannot open a usable
+//! toplevel — the surface renders mispositioned and takes no input — and
+//! COSMIC's own network applet does Wi-Fi password entry inside its popup
+//! rather than in a window. The plan's risk row named this fallback: a
+//! layer-shell popup with keyboard input, accepting the dismiss-on-focus-loss
+//! cost. That is what this is.
 
 use std::collections::HashMap;
 
 use cosmic::app::{Core, Task};
-use cosmic::iced::platform_specific::shell::wayland::commands::popup::{
-    destroy_popup, get_popup,
-};
-use cosmic::iced::window::{self, Id};
+use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
+use cosmic::iced::window::Id;
 use cosmic::iced::{Length, Limits, Subscription};
 use cosmic::widget;
 use cosmic::{Application, Element};
@@ -17,6 +24,16 @@ use tokio::sync::mpsc;
 
 use crate::dbus::{self, Profile, Snapshot, UiCommand};
 
+/// What the popup is currently showing. One surface, several pages — the panel
+/// applet has exactly one place it can put interactive content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Page {
+    Menu,
+    Manage(Profile),
+    Auth,
+    Log,
+}
+
 pub struct App {
     core: Core,
     /// Channel to the D-Bus worker. `None` until the subscription hands it over.
@@ -24,12 +41,8 @@ pub struct App {
     snapshot: Snapshot,
 
     popup: Option<Id>,
-    auth_window: Option<Id>,
-    log_window: Option<Id>,
-    manage_window: Option<Id>,
+    page: Page,
 
-    /// Profile currently open in the manage window.
-    managing: Option<Profile>,
     rename_value: String,
     /// Delete is two-step: the button arms before it acts. A destructive,
     /// irreversible action one click away in a menu is too easy to hit.
@@ -46,6 +59,7 @@ pub enum Message {
 
     TogglePopup,
     Closed(Id),
+    BackToMenu,
 
     SelectProfile(String),
     Disconnect,
@@ -54,13 +68,13 @@ pub enum Message {
     DismissFailure,
 
     OpenLog,
-    CloseLog,
+    OpenAuth,
 
     ManageProfile(String),
-    CloseManage,
     RenameChanged(String),
     ConfirmRename,
     ArmDelete,
+    DisarmDelete,
     ConfirmDelete,
 
     FieldChanged(u32, String),
@@ -93,10 +107,7 @@ impl Application for App {
                 commands: None,
                 snapshot: Snapshot::default(),
                 popup: None,
-                auth_window: None,
-                log_window: None,
-                manage_window: None,
-                managing: None,
+                page: Page::Menu,
                 rename_value: String::new(),
                 delete_armed: false,
                 field_values: HashMap::new(),
@@ -121,49 +132,32 @@ impl Application for App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::WorkerReady(sender) => {
-                self.commands = Some(sender);
-            }
+            Message::WorkerReady(sender) => self.commands = Some(sender),
 
             Message::Snapshot(snapshot) => {
-                let prompt_appeared =
-                    self.snapshot.prompt.is_none() && snapshot.prompt.is_some();
+                let prompt_appeared = self.snapshot.prompt.is_none() && snapshot.prompt.is_some();
                 let prompt_gone = self.snapshot.prompt.is_some() && snapshot.prompt.is_none();
                 self.snapshot = *snapshot;
 
                 if prompt_appeared {
-                    return self.open_auth_window();
+                    // A connect that needs input has stalled until it gets some,
+                    // so open the popup rather than waiting to be noticed.
+                    self.field_values.clear();
+                    self.page = Page::Auth;
+                    return self.open_popup();
                 }
-                if prompt_gone {
-                    return self.close_auth_window();
+                if prompt_gone && self.page == Page::Auth {
+                    self.page = Page::Menu;
+                    self.clear_fields();
                 }
             }
 
             Message::TogglePopup => {
-                return match self.popup.take() {
-                    Some(id) => destroy_popup(id),
+                return match self.popup {
+                    Some(_) => self.close_popup(),
                     None => {
-                        // openvpn3 is the source of truth for the profile list,
-                        // and it can change without us — an `openvpn3
-                        // config-import` from a terminal, say. Refreshing as the
-                        // menu opens keeps R4 honest without polling.
-                        self.send(UiCommand::RefreshProfiles);
-
-                        let id = Id::unique();
-                        self.popup = Some(id);
-                        let mut settings = self.core.applet.get_popup_settings(
-                            self.core.main_window_id().unwrap(),
-                            id,
-                            None,
-                            None,
-                            None,
-                        );
-                        settings.positioner.size_limits = Limits::NONE
-                            .max_width(420.0)
-                            .min_width(320.0)
-                            .min_height(80.0)
-                            .max_height(700.0);
-                        get_popup(settings)
+                        self.page = Page::Menu;
+                        self.open_popup()
                     }
                 };
             }
@@ -171,20 +165,15 @@ impl Application for App {
             Message::Closed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
-                } else if self.log_window == Some(id) {
-                    self.log_window = None;
-                } else if self.manage_window == Some(id) {
-                    self.manage_window = None;
-                    self.managing = None;
-                    self.delete_armed = false;
-                } else if self.auth_window == Some(id) {
-                    // Closing the window is a cancel, not a dismiss. Leaving the
-                    // session parked in auth-pending with no window to return
-                    // to would strand it.
-                    self.auth_window = None;
-                    self.clear_fields();
-                    self.send(UiCommand::CancelPrompt);
+                    self.cancel_prompt_if_open();
+                    self.page = Page::Menu;
                 }
+            }
+
+            Message::BackToMenu => {
+                self.cancel_prompt_if_open();
+                self.delete_armed = false;
+                self.page = Page::Menu;
             }
 
             Message::SelectProfile(config_path) => {
@@ -213,31 +202,22 @@ impl Application for App {
             // Cancelling the portal picker is a no-op, not an error.
             Message::ImportChosen(None) => {}
 
-            Message::OpenLog => {
-                let close = self.close_popup();
-                return Task::batch([close, self.open_log_window()]);
-            }
-
-            Message::CloseLog => return self.close_log_window(),
+            Message::OpenLog => self.page = Page::Log,
+            Message::OpenAuth => self.page = Page::Auth,
 
             Message::ManageProfile(config_path) => {
-                let Some(profile) = self
+                if let Some(profile) = self
                     .snapshot
                     .profiles
                     .iter()
                     .find(|p| p.config_path == config_path)
                     .cloned()
-                else {
-                    return Task::none();
-                };
-                self.rename_value = profile.name.clone();
-                self.managing = Some(profile);
-                self.delete_armed = false;
-                let close = self.close_popup();
-                return Task::batch([close, self.open_manage_window()]);
+                {
+                    self.rename_value = profile.name.clone();
+                    self.delete_armed = false;
+                    self.page = Page::Manage(profile);
+                }
             }
-
-            Message::CloseManage => return self.close_manage_window(),
 
             Message::RenameChanged(value) => {
                 self.rename_value = value;
@@ -246,7 +226,7 @@ impl Application for App {
             }
 
             Message::ConfirmRename => {
-                if let Some(profile) = &self.managing {
+                if let Page::Manage(profile) = &self.page {
                     let new_name = self.rename_value.trim().to_owned();
                     if !new_name.is_empty() && new_name != profile.name {
                         self.send(UiCommand::RenameProfile {
@@ -255,16 +235,18 @@ impl Application for App {
                         });
                     }
                 }
-                return self.close_manage_window();
+                self.page = Page::Menu;
             }
 
             Message::ArmDelete => self.delete_armed = true,
+            Message::DisarmDelete => self.delete_armed = false,
 
             Message::ConfirmDelete => {
-                if let Some(profile) = &self.managing {
+                if let Page::Manage(profile) = &self.page {
                     self.send(UiCommand::DeleteProfile(profile.config_path.clone()));
                 }
-                return self.close_manage_window();
+                self.delete_armed = false;
+                self.page = Page::Menu;
             }
 
             Message::FieldChanged(id, value) => {
@@ -288,13 +270,15 @@ impl Application for App {
 
                 self.send(UiCommand::SubmitPrompt(responses));
                 self.clear_fields();
-                return self.close_auth_window();
+                self.page = Page::Menu;
+                return self.close_popup_without_cancel();
             }
 
             Message::CancelPrompt => {
                 self.send(UiCommand::CancelPrompt);
                 self.clear_fields();
-                return self.close_auth_window();
+                self.page = Page::Menu;
+                return self.close_popup_without_cancel();
             }
 
             Message::Tick => {}
@@ -314,17 +298,18 @@ impl Application for App {
     }
 
     fn view_window(&self, id: Id) -> Element<'_, Message> {
-        if self.popup == Some(id) {
-            self.view_menu()
-        } else if self.auth_window == Some(id) {
-            self.view_auth()
-        } else if self.log_window == Some(id) {
-            self.view_log()
-        } else if self.manage_window == Some(id) {
-            self.view_manage()
-        } else {
-            widget::text("").into()
+        if self.popup != Some(id) {
+            return widget::text("").into();
         }
+
+        let content = match &self.page {
+            Page::Menu => self.view_menu(),
+            Page::Manage(profile) => self.view_manage(profile),
+            Page::Auth => self.view_auth(),
+            Page::Log => self.view_log(),
+        };
+
+        self.core.applet.popup_container(content).into()
     }
 }
 
@@ -346,101 +331,56 @@ impl App {
         self.field_values.clear();
     }
 
+    /// Dismissing the prompt is a cancel, not a defer (AE2). Leaving the session
+    /// parked in auth-pending with no way back to it would strand it.
+    ///
+    /// This is the cost of the popup fallback: a click elsewhere dismisses the
+    /// popup, and that ends the connect attempt.
+    fn cancel_prompt_if_open(&mut self) {
+        if self.page == Page::Auth && self.snapshot.prompt.is_some() {
+            self.send(UiCommand::CancelPrompt);
+            self.clear_fields();
+        }
+    }
+
+    fn open_popup(&mut self) -> Task<Message> {
+        if self.popup.is_some() {
+            return Task::none();
+        }
+
+        // openvpn3 owns the profile list and it can change without us — an
+        // `openvpn3 config-import` from a terminal, say.
+        self.send(UiCommand::RefreshProfiles);
+
+        let id = Id::unique();
+        self.popup = Some(id);
+
+        let mut settings = self.core.applet.get_popup_settings(
+            self.core.main_window_id().unwrap(),
+            id,
+            None,
+            None,
+            None,
+        );
+        settings.positioner.size_limits = Limits::NONE
+            .max_width(460.0)
+            .min_width(340.0)
+            .min_height(80.0)
+            .max_height(700.0);
+        get_popup(settings)
+    }
+
     fn close_popup(&mut self) -> Task<Message> {
+        self.cancel_prompt_if_open();
+        self.close_popup_without_cancel()
+    }
+
+    /// Used when the prompt was already resolved, so the cancel path must not
+    /// fire and undo a submission.
+    fn close_popup_without_cancel(&mut self) -> Task<Message> {
+        self.page = Page::Menu;
         match self.popup.take() {
             Some(id) => destroy_popup(id),
-            None => Task::none(),
-        }
-    }
-
-    // Credential prompt and log window are ordinary toplevels, not panel
-    // popups: a layer-shell popup dismisses on focus loss, and losing a
-    // half-typed one-time code to a stray click is not acceptable (KTD6).
-    fn open_auth_window(&mut self) -> Task<Message> {
-        if self.auth_window.is_some() {
-            return Task::none();
-        }
-        let (id, task) = window::open(window::Settings {
-            size: cosmic::iced::Size::new(420.0, 300.0),
-            resizable: false,
-            decorations: true,
-            transparent: false,
-            ..Default::default()
-        });
-        self.auth_window = Some(id);
-        task.then(|_| Task::none())
-    }
-
-    fn close_auth_window(&mut self) -> Task<Message> {
-        match self.auth_window.take() {
-            // `close` is generic over the message type: it emits nothing, so it
-            // unifies with our task type directly. Adding a `.then` only made
-            // the closure's parameter unconstrained.
-            Some(id) => window::close(id),
-            None => Task::none(),
-        }
-    }
-
-    /// Paint a window background and fill the surface.
-    ///
-    /// An applet's own surface is a panel button, so nothing in the chain draws
-    /// a window background for a secondary toplevel. Without this the window
-    /// renders transparent and unclickable.
-    fn window_shell<'a>(
-        content: impl Into<Element<'a, Message>>,
-    ) -> Element<'a, Message> {
-        widget::container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .class(cosmic::theme::Container::WindowBackground)
-            .into()
-    }
-
-    fn open_manage_window(&mut self) -> Task<Message> {
-        if self.manage_window.is_some() {
-            return Task::none();
-        }
-        let (id, task) = window::open(window::Settings {
-            size: cosmic::iced::Size::new(420.0, 300.0),
-            resizable: false,
-            decorations: true,
-            transparent: false,
-            ..Default::default()
-        });
-        self.manage_window = Some(id);
-        task.then(|_| Task::none())
-    }
-
-    fn close_manage_window(&mut self) -> Task<Message> {
-        self.managing = None;
-        self.delete_armed = false;
-        match self.manage_window.take() {
-            Some(id) => window::close(id),
-            None => Task::none(),
-        }
-    }
-
-    fn open_log_window(&mut self) -> Task<Message> {
-        if self.log_window.is_some() {
-            return Task::none();
-        }
-        let (id, task) = window::open(window::Settings {
-            size: cosmic::iced::Size::new(720.0, 480.0),
-            resizable: true,
-            decorations: true,
-            transparent: false,
-            ..Default::default()
-        });
-        self.log_window = Some(id);
-        task.then(|_| Task::none())
-    }
-
-    fn close_log_window(&mut self) -> Task<Message> {
-        match self.log_window.take() {
-            // `close` is generic over the message type: it emits nothing, so it
-            // unifies with our task type directly. Adding a `.then` only made
-            // the closure's parameter unconstrained.
-            Some(id) => window::close(id),
             None => Task::none(),
         }
     }
@@ -449,13 +389,12 @@ impl App {
 
     fn view_menu(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
-        let mut content = widget::column::with_capacity(8).spacing(spacing.space_xxs);
 
         if let Some(reason) = &self.snapshot.unavailable {
-            content = content.push(widget::text::body(reason));
-            return self.core.applet.popup_container(content).into();
+            return widget::text::body(reason).into();
         }
 
+        let mut content = widget::column::with_capacity(8).spacing(spacing.space_xxs);
         content = content.push(self.view_header());
         content = content.push(widget::divider::horizontal::default());
 
@@ -476,7 +415,7 @@ impl App {
                 .on_press(Message::ImportRequested),
         );
 
-        self.core.applet.popup_container(content).into()
+        content.into()
     }
 
     /// R3 — the active profile and how long it has been up.
@@ -498,6 +437,13 @@ impl App {
             if let Some(since) = self.snapshot.session_created {
                 column = column.push(widget::text::caption(format!("Up {}", format_uptime(since))));
             }
+        }
+
+        // A dismissed prompt used to be unreachable. Since dismissing now
+        // cancels, this is the way back only while the request is still live.
+        if state == ConnectionState::AuthPending && self.snapshot.prompt.is_some() {
+            column =
+                column.push(widget::button::suggested("Enter credentials").on_press(Message::OpenAuth));
         }
 
         if state == ConnectionState::Failed {
@@ -553,21 +499,18 @@ impl App {
             )
             .push(widget::button::text(label).on_press(message))
             .push(
-                widget::button::text("…")
+                widget::button::text("⋯")
                     .on_press(Message::ManageProfile(profile.config_path.clone())),
             )
             .into()
     }
 
-    /// Rename and delete for one profile (R4-adjacent; both were deferred in the
-    /// original plan and pulled in later).
-    fn view_manage(&self) -> Element<'_, Message> {
-        let Some(profile) = &self.managing else {
-            return widget::text("").into();
-        };
+    // ------------------------------------------------------- manage a profile
 
+    fn view_manage<'a>(&'a self, profile: &'a Profile) -> Element<'a, Message> {
         let is_active = self.snapshot.active_config.as_deref() == Some(&profile.config_path);
-        let renamed = self.rename_value.trim() != profile.name && !self.rename_value.trim().is_empty();
+        let renamed =
+            self.rename_value.trim() != profile.name && !self.rename_value.trim().is_empty();
 
         let mut rename_button = widget::button::suggested("Rename");
         if renamed {
@@ -575,9 +518,8 @@ impl App {
         }
 
         let mut content = widget::column::with_capacity(8)
-            .spacing(12)
-            .padding(20)
-            .push(widget::text::title3("Manage profile"))
+            .spacing(10)
+            .push(widget::text::title4("Manage profile"))
             .push(
                 widget::text_input("Profile name", &self.rename_value)
                     .on_input(Message::RenameChanged)
@@ -590,7 +532,7 @@ impl App {
         // the menu describing something gone. Refuse and say why, rather than
         // tearing down their tunnel as a side effect of a delete.
         if is_active {
-            content = content.push(widget::text::body(
+            content = content.push(widget::text::caption(
                 "This profile is in use. Disconnect it before deleting.",
             ));
         } else if self.delete_armed {
@@ -602,14 +544,9 @@ impl App {
                 .push(
                     widget::row::with_capacity(2)
                         .spacing(8)
+                        .push(widget::button::text("Cancel").on_press(Message::DisarmDelete))
                         .push(
-                            widget::button::text("Cancel").on_press(Message::RenameChanged(
-                                self.rename_value.clone(),
-                            )),
-                        )
-                        .push(
-                            widget::button::destructive("Delete")
-                                .on_press(Message::ConfirmDelete),
+                            widget::button::destructive("Delete").on_press(Message::ConfirmDelete),
                         ),
                 );
         } else {
@@ -617,20 +554,16 @@ impl App {
                 .push(widget::button::destructive("Delete profile…").on_press(Message::ArmDelete));
         }
 
-        if let Some(error) = &self.snapshot.unavailable {
-            content = content.push(widget::text::caption(error));
-        }
-
-        Self::window_shell(
-            content.push(widget::button::text("Close").on_press(Message::CloseManage)),
-        )
+        content
+            .push(widget::button::text("Back").on_press(Message::BackToMenu))
+            .into()
     }
 
-    // -------------------------------------------------------- the two windows
+    // ------------------------------------------------------------ credentials
 
     fn view_auth(&self) -> Element<'_, Message> {
         let Some(prompt) = &self.snapshot.prompt else {
-            return widget::text("").into();
+            return widget::text::body("No credentials are being requested.").into();
         };
 
         let heading = match prompt.kind {
@@ -640,9 +573,8 @@ impl App {
         };
 
         let mut content = widget::column::with_capacity(prompt.fields.len() + 4)
-            .spacing(12)
-            .padding(20)
-            .push(widget::text::title3(heading));
+            .spacing(10)
+            .push(widget::text::title4(heading));
 
         if !prompt.message.trim().is_empty() {
             content = content.push(widget::text::body(&prompt.message));
@@ -654,28 +586,30 @@ impl App {
                 .get(&field.id)
                 .map(String::as_str)
                 .unwrap_or_default();
-
             let id = field.id;
-            let mut input = widget::text_input(field.label.as_str(), value)
+
+            let input = widget::text_input(field.label.as_str(), value)
                 .on_input(move |v| Message::FieldChanged(id, v))
                 .on_submit(|_| Message::SubmitPrompt);
 
-            if field.masked {
-                input = input.password();
-            }
-
-            content = content.push(input);
+            content = content.push(if field.masked {
+                input.password()
+            } else {
+                input
+            });
         }
 
-        content = content.push(
-            widget::row::with_capacity(2)
-                .spacing(8)
-                .push(widget::button::text("Cancel").on_press(Message::CancelPrompt))
-                .push(widget::button::suggested("Connect").on_press(Message::SubmitPrompt)),
-        );
-
-        Self::window_shell(content)
+        content
+            .push(
+                widget::row::with_capacity(2)
+                    .spacing(8)
+                    .push(widget::button::text("Cancel").on_press(Message::CancelPrompt))
+                    .push(widget::button::suggested("Connect").on_press(Message::SubmitPrompt)),
+            )
+            .into()
     }
+
+    // ------------------------------------------------------------- the log
 
     /// R13 — read-only, most recent attempt.
     fn view_log(&self) -> Element<'_, Message> {
@@ -685,7 +619,9 @@ impl App {
                 for line in lines {
                     column = column.push(widget::text::monotext(line));
                 }
-                widget::scrollable(column).height(Length::Fill).into()
+                widget::scrollable(column)
+                    .height(Length::Fixed(360.0))
+                    .into()
             }
             // KTD4: a session adopted from outside never had log forwarding on.
             // Saying so beats a blank pane, which reads as a bug or a clean run.
@@ -695,14 +631,12 @@ impl App {
             .into(),
         };
 
-        Self::window_shell(
-            widget::column::with_capacity(3)
-                .spacing(12)
-                .padding(20)
-                .push(widget::text::title3("Session log"))
-                .push(body)
-                .push(widget::button::text("Close").on_press(Message::CloseLog)),
-        )
+        widget::column::with_capacity(3)
+            .spacing(10)
+            .push(widget::text::title4("Session log"))
+            .push(body)
+            .push(widget::button::text("Back").on_press(Message::BackToMenu))
+            .into()
     }
 }
 
