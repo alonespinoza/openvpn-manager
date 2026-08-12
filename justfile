@@ -23,9 +23,11 @@ install: build
     install -Dm755 target/release/{{name}} {{bindir}}/{{name}}
     install -Dm644 data/{{appid}}.desktop {{appdir}}/{{appid}}.desktop
     install -Dm644 data/{{appid}}.metainfo.xml {{metadir}}/{{appid}}.metainfo.xml
-    for icon in data/icons/*.svg; do \
-        install -Dm644 "$icon" {{icondir}}/"$(basename "$icon")"; \
-    done
+    # Only the app's own icon, under its own name. The state icons are compiled
+    # into the binary — shipping them as network-vpn-*-symbolic would override
+    # those icons for every other application on the system.
+    install -Dm644 data/icons/network-vpn-symbolic.svg \
+        {{icondir}}/{{appid}}-symbolic.svg
     @echo ""
     @echo "Installed. One manual step remains, once:"
     @echo "  Settings → Desktop → Panel → Configure panel applets → add 'OpenVPN'"
@@ -35,7 +37,13 @@ uninstall:
     rm -f {{bindir}}/{{name}}
     rm -f {{appdir}}/{{appid}}.desktop
     rm -f {{metadir}}/{{appid}}.metainfo.xml
-    rm -f {{icondir}}/network-vpn-*-symbolic.svg
+    rm -f {{icondir}}/{{appid}}-symbolic.svg
+    # Clean up the overreaching names an earlier version installed.
+    rm -f {{icondir}}/network-vpn-disconnected-symbolic.svg
+    rm -f {{icondir}}/network-vpn-acquiring-symbolic.svg
+    rm -f {{icondir}}/network-vpn-need-auth-symbolic.svg
+    rm -f {{icondir}}/network-vpn-error-symbolic.svg
+    rm -f {{icondir}}/network-vpn-symbolic.svg
 
 # Run in the foreground with logging, outside the panel, for debugging.
 run:

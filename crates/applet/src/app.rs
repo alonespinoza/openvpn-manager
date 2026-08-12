@@ -292,7 +292,7 @@ impl Application for App {
     fn view(&self) -> Element<'_, Message> {
         self.core
             .applet
-            .icon_button(self.snapshot.state.icon_name())
+            .icon_button_from_handle(state_icon(self.snapshot.state))
             .on_press(Message::TogglePopup)
             .into()
     }
@@ -638,6 +638,39 @@ impl App {
             .push(widget::button::text("Back").on_press(Message::BackToMenu))
             .into()
     }
+}
+
+/// The panel icon, embedded rather than looked up by name.
+///
+/// Icon-theme lookup was the wrong mechanism here twice over. Names like
+/// `network-vpn-symbolic` already exist in the system theme — Adwaita's is a
+/// key — so the stock icon won and ours was never seen. And shipping files
+/// under those names into the user's hicolor theme would override that icon for
+/// every other application, which is not ours to do.
+///
+/// Embedding removes the whole class of problem: no name collision, no icon
+/// cache, no install path to get wrong. `symbolic` keeps them tinted by the
+/// panel's theme, which is what makes them legible on light and dark alike.
+fn state_icon(state: ConnectionState) -> widget::icon::Handle {
+    let bytes: &'static [u8] = match state {
+        ConnectionState::Disconnected => {
+            include_bytes!("../../../data/icons/network-vpn-disconnected-symbolic.svg")
+        }
+        ConnectionState::Connecting => {
+            include_bytes!("../../../data/icons/network-vpn-acquiring-symbolic.svg")
+        }
+        ConnectionState::Connected => {
+            include_bytes!("../../../data/icons/network-vpn-symbolic.svg")
+        }
+        ConnectionState::AuthPending => {
+            include_bytes!("../../../data/icons/network-vpn-need-auth-symbolic.svg")
+        }
+        ConnectionState::Failed => {
+            include_bytes!("../../../data/icons/network-vpn-error-symbolic.svg")
+        }
+    };
+
+    widget::icon::from_svg_bytes(bytes).symbolic(true)
 }
 
 fn state_label(state: ConnectionState) -> &'static str {
