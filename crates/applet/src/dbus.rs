@@ -12,6 +12,7 @@ use futures_util::StreamExt;
 use openvpn3_dbus::attention::{ClientAttentionGroup, ClientAttentionType, PromptField, PromptKind};
 use openvpn3_dbus::logbuf::{LogEntry, LogStore, SessionLog};
 use openvpn3_dbus::machine::{Command, Event, InputResponse, Machine};
+use openvpn3_dbus::profile::display_name;
 use openvpn3_dbus::proxy::{
     ConfigurationManagerProxy, ConfigurationProxy, SessionManagerProxy, SessionProxy,
 };
@@ -194,19 +195,11 @@ impl Worker {
         self.profile_names.clear();
 
         for path in paths {
-            let key = path.to_string();
             // Profiles are keyed by object path, never by name — openvpn3
             // permits duplicate names and the menu has to stay unambiguous.
-            let name = match ConfigurationProxy::builder(&self.connection)
-                .path(path.clone())
-                .and_then(|b| Ok(b))
-            {
-                Ok(builder) => match builder.build().await {
-                    Ok(proxy) => proxy.name().await.unwrap_or_else(|_| key.clone()),
-                    Err(_) => key.clone(),
-                },
-                Err(_) => key.clone(),
-            };
+            let key = path.to_string();
+            let raw_name = self.config_name(&path).await;
+            let name = display_name(&raw_name, &key);
 
             self.profile_names.insert(key.clone(), name.clone());
             self.profiles.push(Profile {
@@ -216,6 +209,33 @@ impl Worker {
         }
 
         self.profiles.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
+    /// Empty string on failure — `display_name` turns that into a usable label.
+    /// The warning matters: a silent fallback here is what put raw D-Bus object
+    /// paths in the menu, and nothing said why.
+    async fn config_name(&self, path: &OwnedObjectPath) -> String {
+        let builder = match ConfigurationProxy::builder(&self.connection).path(path.clone()) {
+            Ok(builder) => builder,
+            Err(error) => {
+                tracing::warn!(%path, %error, "could not address config object");
+                return String::new();
+            }
+        };
+
+        match builder.build().await {
+            Ok(proxy) => match proxy.name().await {
+                Ok(name) => name,
+                Err(error) => {
+                    tracing::warn!(%path, %error, "could not read the profile name");
+                    String::new()
+                }
+            },
+            Err(error) => {
+                tracing::warn!(%path, %error, "could not build a config proxy");
+                String::new()
+            }
+        }
     }
 
     fn mark_unavailable(&mut self, error: zbus::Error) {

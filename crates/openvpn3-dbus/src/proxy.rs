@@ -44,16 +44,16 @@ pub trait Configuration {
 
     fn remove(&self) -> zbus::Result<()>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn name(&self) -> zbus::Result<String>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn valid(&self) -> zbus::Result<bool>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn persistent(&self) -> zbus::Result<bool>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn import_timestamp(&self) -> zbus::Result<u64>;
 }
 
@@ -125,27 +125,27 @@ pub trait Session {
 
     /// Last status as `(major, minor, message)`. Read at startup to adopt
     /// sessions that already exist.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn status(&self) -> zbus::Result<(u32, u32, String)>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn session_name(&self) -> zbus::Result<String>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn config_name(&self) -> zbus::Result<String>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<OwnedObjectPath>;
 
     /// Unix epoch seconds. R3's uptime is computed from this rather than from a
     /// timer the applet starts, so an adopted session shows its true age.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn session_created(&self) -> zbus::Result<u64>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn device_name(&self) -> zbus::Result<String>;
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn backend_pid(&self) -> zbus::Result<u32>;
 
     #[zbus(signal)]

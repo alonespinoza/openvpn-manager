@@ -8,6 +8,7 @@
 pub mod attention;
 pub mod logbuf;
 pub mod machine;
+pub mod profile;
 pub mod proxy;
 pub mod status;
 mod wire;
