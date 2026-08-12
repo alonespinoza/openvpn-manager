@@ -479,3 +479,54 @@ fn dismissing_a_failure_returns_to_disconnected() {
     m.handle(Event::FailureDismissed);
     assert_eq!(m.state(), ConnectionState::Disconnected);
 }
+
+// ------------------------------------------------- Recovering from a missed event
+
+/// The wedge this guards against: a disconnect whose completion signal never
+/// arrives used to leave the machine waiting forever, and every later profile
+/// selection silently did nothing. The caller can now see what it is waiting on
+/// and resolve it against reality.
+#[test]
+fn a_pending_teardown_is_visible_to_the_caller() {
+    let mut m = machine_connected_to("/cfg/a", "/s/1");
+    assert_eq!(m.awaiting_teardown(), None);
+
+    m.handle(Event::DisconnectRequested);
+    assert_eq!(
+        m.awaiting_teardown(),
+        Some("/s/1"),
+        "the caller must be able to tell what the machine is blocked on"
+    );
+
+    m.handle(Event::SessionRemoved {
+        session_path: "/s/1".into(),
+    });
+    assert_eq!(m.awaiting_teardown(), None);
+}
+
+/// Selecting a profile while wedged must not be lost — once the teardown is
+/// resolved, the queued choice still connects.
+#[test]
+fn a_selection_made_during_a_stuck_teardown_still_connects_once_resolved() {
+    let mut m = machine_connected_to("/cfg/a", "/s/1");
+    m.handle(Event::DisconnectRequested);
+
+    // The completion signal never arrived; the user clicks a profile anyway.
+    let commands = m.handle(Event::ProfileSelected {
+        config_path: "/cfg/b".into(),
+    });
+    assert!(commands.is_empty());
+
+    // Caller notices openvpn3 no longer lists the session and says so.
+    let commands = m.handle(Event::SessionRemoved {
+        session_path: "/s/1".into(),
+    });
+    assert_eq!(
+        commands,
+        vec![Command::NewTunnel {
+            config_path: "/cfg/b".into()
+        }],
+        "the queued selection must survive the recovery"
+    );
+    assert_eq!(m.awaiting_teardown(), None);
+}

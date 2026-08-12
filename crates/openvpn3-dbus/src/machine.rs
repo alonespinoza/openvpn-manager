@@ -137,6 +137,16 @@ impl Machine {
         self.active.as_ref().map(|a| a.session_path.as_str())
     }
 
+    /// The session we issued `Disconnect` to and have not yet seen go away.
+    ///
+    /// Exposed so the caller can reconcile against reality: if openvpn3 no
+    /// longer lists this session, the teardown completed and we simply missed
+    /// the signal. Without that check a single dropped event leaves the machine
+    /// waiting forever, and every later profile selection silently does nothing.
+    pub fn awaiting_teardown(&self) -> Option<&str> {
+        self.awaiting_teardown.as_deref()
+    }
+
     pub fn active_config(&self) -> Option<&str> {
         self.active.as_ref().map(|a| a.config_path.as_str())
     }

@@ -6,6 +6,7 @@
 //! Wayland.
 
 pub mod attention;
+pub mod event;
 pub mod logbuf;
 pub mod machine;
 pub mod profile;

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use futures_util::StreamExt;
 use openvpn3_dbus::attention::{ClientAttentionGroup, ClientAttentionType, PromptField, PromptKind};
+use openvpn3_dbus::event::SessionEventType;
 use openvpn3_dbus::logbuf::{LogEntry, LogStore, SessionLog};
 use openvpn3_dbus::machine::{Command, Event, InputResponse, Machine};
 use openvpn3_dbus::profile::display_name;
@@ -302,9 +303,9 @@ impl Worker {
         let handle = tokio::spawn(async move {
             while let Some(signal) = stream.next().await {
                 let Ok(args) = signal.args() else { continue };
-                // EventType 3 is session destruction in openvpn3's
-                // SessionManager::EventType; anything else we treat as "exists".
-                let removed = args.event_type == 3;
+                let removed = SessionEventType::try_from(args.event_type)
+                    .map(SessionEventType::is_destroyed)
+                    .unwrap_or(false);
                 let _ = wire
                     .send(Wire::SessionManager {
                         path: args.path.to_string(),
@@ -404,7 +405,41 @@ impl Worker {
 
     // --------------------------------------------------------------- events
 
+    /// Resolve a teardown we are still waiting on against what openvpn3
+    /// actually reports. Signals can be missed — a dropped one used to leave the
+    /// machine waiting forever, with every later click doing nothing — so before
+    /// acting on a user request, confirm the session really is still there.
+    async fn reconcile_teardown(&mut self, wire: &mpsc::Sender<Wire>) {
+        let Some(pending) = self.machine.awaiting_teardown().map(str::to_owned) else {
+            return;
+        };
+
+        let Ok(manager) = SessionManagerProxy::new(&self.connection).await else {
+            return;
+        };
+        let Ok(paths) = manager.fetch_available_sessions().await else {
+            return;
+        };
+
+        let still_present = paths.iter().any(|p| p.to_string() == pending);
+        if !still_present {
+            tracing::debug!(session = %pending, "teardown already completed; recovering");
+            self.logs.remove_session(&pending);
+            let commands = self.machine.handle(Event::SessionRemoved {
+                session_path: pending,
+            });
+            self.execute(commands, wire).await;
+        }
+    }
+
     async fn on_ui_command(&mut self, command: UiCommand, wire: &mpsc::Sender<Wire>) {
+        if matches!(
+            command,
+            UiCommand::SelectProfile(_) | UiCommand::Disconnect | UiCommand::RefreshProfiles
+        ) {
+            self.reconcile_teardown(wire).await;
+        }
+
         let event = match command {
             UiCommand::SelectProfile(config_path) => Some(Event::ProfileSelected { config_path }),
             UiCommand::Disconnect => Some(Event::DisconnectRequested),
