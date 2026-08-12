@@ -124,6 +124,12 @@ impl Application for App {
                 return match self.popup.take() {
                     Some(id) => destroy_popup(id),
                     None => {
+                        // openvpn3 is the source of truth for the profile list,
+                        // and it can change without us — an `openvpn3
+                        // config-import` from a terminal, say. Refreshing as the
+                        // menu opens keeps R4 honest without polling.
+                        self.send(UiCommand::RefreshProfiles);
+
                         let id = Id::unique();
                         self.popup = Some(id);
                         let mut settings = self.core.applet.get_popup_settings(
@@ -229,7 +235,7 @@ impl Application for App {
 
     /// The panel icon. R1/R2: this is the whole point — state without opening
     /// anything.
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         self.core
             .applet
             .icon_button(self.snapshot.state.icon_name())
@@ -237,7 +243,7 @@ impl Application for App {
             .into()
     }
 
-    fn view_window(&self, id: Id) -> Element<Message> {
+    fn view_window(&self, id: Id) -> Element<'_, Message> {
         if self.popup == Some(id) {
             self.view_menu()
         } else if self.auth_window == Some(id) {
@@ -326,7 +332,7 @@ impl App {
 
     // ------------------------------------------------------------- the menu
 
-    fn view_menu(&self) -> Element<Message> {
+    fn view_menu(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
         let mut content = widget::column::with_capacity(8).spacing(spacing.space_xxs);
 
@@ -359,7 +365,7 @@ impl App {
     }
 
     /// R3 — the active profile and how long it has been up.
-    fn view_header(&self) -> Element<Message> {
+    fn view_header(&self) -> Element<'_, Message> {
         let state = self.snapshot.state;
 
         let title = match (&self.snapshot.active_name, state) {
@@ -436,7 +442,7 @@ impl App {
 
     // -------------------------------------------------------- the two windows
 
-    fn view_auth(&self) -> Element<Message> {
+    fn view_auth(&self) -> Element<'_, Message> {
         let Some(prompt) = &self.snapshot.prompt else {
             return widget::text("").into();
         };
@@ -486,7 +492,7 @@ impl App {
     }
 
     /// R13 — read-only, most recent attempt.
-    fn view_log(&self) -> Element<Message> {
+    fn view_log(&self) -> Element<'_, Message> {
         let body: Element<'_, Message> = match &self.snapshot.log {
             Some(lines) if !lines.is_empty() => {
                 let mut column = widget::column::with_capacity(lines.len()).spacing(2);
