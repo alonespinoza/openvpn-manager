@@ -13,7 +13,7 @@ members = ["crates/openvpn3-dbus", "crates/applet"]
 default-members = ["crates/openvpn3-dbus"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/alonespinoza/openvpn-manager"

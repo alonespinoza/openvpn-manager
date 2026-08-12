@@ -34,9 +34,16 @@
   </provides>
 
   <releases>
-    <release version="0.1.0" date="2026-08-11">
+    <release version="1.0.0" date="2026-08-12">
       <description>
-        <p>Initial development release.</p>
+        <p>First release.</p>
+        <ul>
+          <li>Connection state in the panel, driven by openvpn3 status signals.</li>
+          <li>Connect, disconnect, and switch profiles from the menu, with one session at a time.</li>
+          <li>Credential prompts for passwords, one-time codes, and private-key passphrases.</li>
+          <li>Import, rename, and delete profiles without a terminal.</li>
+          <li>A read-only log for diagnosing a failed connect.</li>
+        </ul>
       </description>
     </release>
   </releases>
