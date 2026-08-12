@@ -268,10 +268,22 @@ impl Worker {
     }
 
     fn mark_unavailable(&mut self, error: zbus::Error) {
-        self.unavailable = Some(format!(
-            "openvpn3 is not reachable on the D-Bus system bus ({error}). \
-             Check that openvpn3-linux is installed and that `openvpn3 configs-list` works."
-        ));
+        // "Not installed" and "installed but not answering" need different
+        // fixes, and the applet is the only thing in a position to tell them
+        // apart. Saying "openvpn3 is unavailable" for both leaves the user to
+        // guess which problem they have.
+        self.unavailable = Some(if openvpn3_on_path() {
+            format!(
+                "openvpn3 is installed but its services are not answering on the \
+                 D-Bus system bus ({error}). Try `openvpn3 configs-list` in a \
+                 terminal — if that fails too, the openvpn3 services are not running."
+            )
+        } else {
+            "openvpn3-linux is not installed.\n\n\
+             Add OpenVPN's apt repository, then:\n\
+             sudo apt install openvpn3"
+                .to_owned()
+        });
         self.profiles.clear();
     }
 
@@ -919,6 +931,20 @@ impl Worker {
             }
         }
     }
+}
+
+/// Is the `openvpn3` command on PATH?
+///
+/// Deliberately only a check. Installing a system package needs root, and R15
+/// exists so this applet never has a privilege-escalation path — a tray icon
+/// that can install packages is a tray icon that can install anything. Telling
+/// the user the command to run is where its responsibility ends.
+fn openvpn3_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+
+    std::env::split_paths(&path).any(|dir| dir.join("openvpn3").is_file())
 }
 
 fn now_epoch() -> u64 {

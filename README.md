@@ -20,7 +20,7 @@ missing features.
 ## Requirements
 
 - Pop!_OS 24.04 (or another COSMIC 1.x desktop) on Wayland
-- `openvpn3-linux`, with its session D-Bus services reachable as your user
+- `openvpn3-linux`, reachable on the D-Bus system bus as your user
 - Rust **1.93 or newer** — libcosmic requires it. `rustup update stable` if unsure.
 - `just`, `cmake`, `pkg-config`, and the usual Wayland/graphics dev headers
 
@@ -28,7 +28,44 @@ missing features.
 sudo apt install just cmake pkg-config libxkbcommon-dev libwayland-dev
 ```
 
-## Build and install
+`just doctor` reports anything missing, including whether openvpn3 is installed
+and whether its services are actually answering.
+
+### openvpn3
+
+openvpn3 is not in Ubuntu's archive; it comes from OpenVPN's own repository.
+
+```bash
+sudo mkdir -p /etc/apt/keyrings
+curl -sSfL https://packages.openvpn.net/packages-repo.gpg \
+  | sudo tee /etc/apt/keyrings/openvpn.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/openvpn.asc] \
+  https://packages.openvpn.net/openvpn3/debian noble main" \
+  | sudo tee /etc/apt/sources.list.d/openvpn3.list
+sudo apt update && sudo apt install openvpn3
+```
+
+Check OpenVPN's own documentation if that drifts — and substitute your Ubuntu
+codename for `noble` if you are not on 24.04.
+
+The applet detects openvpn3 and tells you which of the two problems you have —
+not installed, or installed but not answering — but it will never install it for
+you. That needs root, and this applet deliberately has no path to root at all.
+
+## Install
+
+Two ways, depending on whether you want it packaged.
+
+**A .deb** — installs to `/usr`, so it needs root once to install and never
+again to run:
+
+```bash
+cargo install cargo-deb        # once
+just deb
+sudo apt install ./target/debian/*.deb
+```
+
+**Or straight into your home directory** — no root at any point:
 
 ```bash
 git clone https://github.com/alonespinoza/openvpn-manager.git
@@ -36,8 +73,7 @@ cd openvpn-manager
 just install
 ```
 
-Everything lands under `~/.local` — there is no root step anywhere in the
-install, by design.
+Everything then lands under `~/.local`.
 
 Then, **once**: Settings → Desktop → Panel → Configure panel applets → add
 **OpenVPN**.

@@ -45,6 +45,27 @@ uninstall:
     rm -f {{icondir}}/network-vpn-error-symbolic.svg
     rm -f {{icondir}}/network-vpn-symbolic.svg
 
+# Build a .deb. Installs to /usr, so it needs sudo to install but not to run.
+# `just install` remains the no-root path into $HOME.
+deb:
+    cargo deb -p {{name}}
+    @echo ""
+    @echo "Install it with:  sudo apt install ./target/debian/*.deb"
+
+# Report what is missing before you find out the hard way.
+doctor:
+    #!/usr/bin/env bash
+    ok=0
+    check() { if eval "$2" >/dev/null 2>&1; then echo "  ok    $1"; else echo "  MISS  $1 — $3"; ok=1; fi; }
+    echo "openvpn-manager prerequisites:"
+    check "openvpn3"      "command -v openvpn3"          "add OpenVPN's apt repo, then: sudo apt install openvpn3"
+    check "openvpn3 D-Bus" "openvpn3 configs-list"       "installed, but its services are not answering"
+    check "rust >= 1.93"  "cargo --version"              "rustup update stable (libcosmic needs 1.93+)"
+    check "just"          "command -v just"              "sudo apt install just"
+    check "wayland"       "test -n \"$WAYLAND_DISPLAY\"" "not running under Wayland"
+    check "cosmic panel"  "pgrep -x cosmic-panel"        "the COSMIC panel is not running"
+    exit $ok
+
 # Run in the foreground with logging, outside the panel, for debugging.
 run:
     RUST_LOG=debug cargo run -p {{name}}

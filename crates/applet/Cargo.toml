@@ -32,3 +32,31 @@ features = ["applet", "tokio", "a11y", "wgpu"]
 version = "0.11"
 default-features = false
 features = ["tokio"]
+
+[package.metadata.deb]
+name = "openvpn-manager"
+maintainer = "Alonso Espinoza <alonespinoza@users.noreply.github.com>"
+copyright = "2026 Alonso Espinoza"
+license-file = ["../../LICENSE", "0"]
+section = "net"
+priority = "optional"
+extended-description = """\
+A COSMIC panel applet for openvpn3. Shows connection state at a glance and \
+lets you connect, disconnect, switch profiles, and import a .ovpn from the \
+panel menu. Credentials are never stored."""
+
+# Recommends rather than Depends: openvpn3-linux is not in Ubuntu's default
+# archive, it comes from OpenVPN's own apt repository. Declaring it as a hard
+# dependency would make the package uninstallable on a machine that has not
+# added that repo yet, which is worse than installing and saying what is
+# missing — which the applet does.
+depends = "$auto"
+recommends = "openvpn3"
+
+assets = [
+    ["../../target/release/openvpn-manager-applet", "usr/bin/", "755"],
+    ["../../data/io.github.alonespinoza.OpenvpnManager.desktop", "usr/share/applications/", "644"],
+    ["../../data/io.github.alonespinoza.OpenvpnManager.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../data/icons/network-vpn-symbolic.svg", "usr/share/icons/hicolor/scalable/apps/io.github.alonespinoza.OpenvpnManager-symbolic.svg", "644"],
+    ["../../README.md", "usr/share/doc/openvpn-manager/", "644"],
+]
