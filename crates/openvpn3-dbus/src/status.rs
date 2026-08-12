@@ -174,3 +174,15 @@ impl Status {
         map_status(self.major, self.minor)
     }
 }
+
+impl Status {
+    /// The state this status would produce, or the caller's current one when it
+    /// maps to no change. Convenience for comparing "what we show" against
+    /// "what openvpn3 says".
+    pub fn transition_state(&self) -> ConnectionState {
+        match self.transition() {
+            StateTransition::Set(state) => state,
+            StateTransition::NoChange { .. } => ConnectionState::default(),
+        }
+    }
+}

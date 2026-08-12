@@ -337,15 +337,29 @@ impl Worker {
         {
             let (wire, key, session) = (wire.clone(), key.clone(), session.clone());
             let handle = tokio::spawn(async move {
-                let Ok(mut stream) = session.receive_status_change().await else {
-                    return;
+                let mut stream = match session.receive_status_change().await {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::warn!(session = %key, %error, "no StatusChange subscription");
+                        return;
+                    }
                 };
+                tracing::debug!(session = %key, "subscribed to StatusChange");
                 while let Some(signal) = stream.next().await {
                     let Ok(args) = signal.args() else { continue };
-                    let Ok(status) =
-                        Status::from_wire(args.major as u8, args.minor as u16, args.message.clone())
-                    else {
-                        continue;
+                    let status = match Status::from_wire(
+                        args.major as u8,
+                        args.minor as u16,
+                        args.message.clone(),
+                    ) {
+                        Ok(status) => status,
+                        Err(error) => {
+                            tracing::warn!(
+                                major = args.major, minor = args.minor, %error,
+                                "undecodable StatusChange"
+                            );
+                            continue;
+                        }
                     };
                     let _ = wire
                         .send(Wire::Status {
@@ -409,6 +423,43 @@ impl Worker {
     /// actually reports. Signals can be missed — a dropped one used to leave the
     /// machine waiting forever, with every later click doing nothing — so before
     /// acting on a user request, confirm the session really is still there.
+    /// Re-read the active session's real status.
+    ///
+    /// Status is pushed, not polled — but a signal that never arrives leaves the
+    /// icon asserting something false, and a display that is trusted and wrong is
+    /// the failure this whole design is meant to avoid. Checking at the moment
+    /// the user opens the menu is not a timer: it is making sure that what they
+    /// are about to look at is true.
+    async fn reconcile_active_status(&mut self, wire: &mpsc::Sender<Wire>) {
+        let Some(session_path) = self.machine.active_session().map(str::to_owned) else {
+            return;
+        };
+        let Some(session) = self.proxy_for(&session_path).await else {
+            return;
+        };
+
+        let Ok((major, minor, message)) = session.status().await else {
+            return;
+        };
+        let Ok(status) = Status::from_wire(major as u8, minor as u16, message) else {
+            return;
+        };
+
+        if self.machine.state() != status.transition_state() {
+            tracing::debug!(
+                %session_path, ?status.major, ?status.minor,
+                "reconciling a stale icon against the session's real status"
+            );
+        }
+
+        self.session_created = session.session_created().await.ok().or(self.session_created);
+        let commands = self.machine.handle(Event::StatusChanged {
+            session_path,
+            status,
+        });
+        self.execute(commands, wire).await;
+    }
+
     async fn reconcile_teardown(&mut self, wire: &mpsc::Sender<Wire>) {
         let Some(pending) = self.machine.awaiting_teardown().map(str::to_owned) else {
             return;
@@ -438,6 +489,7 @@ impl Worker {
             UiCommand::SelectProfile(_) | UiCommand::Disconnect | UiCommand::RefreshProfiles
         ) {
             self.reconcile_teardown(wire).await;
+            self.reconcile_active_status(wire).await;
         }
 
         let event = match command {
@@ -472,6 +524,19 @@ impl Worker {
     async fn on_wire(&mut self, wire_event: Wire, wire: &mpsc::Sender<Wire>) {
         let event = match wire_event {
             Wire::Status { session, status } => {
+                tracing::debug!(
+                    %session, ?status.major, ?status.minor,
+                    active = ?self.machine.active_session(),
+                    "StatusChange received"
+                );
+                if self.machine.active_session() != Some(session.as_str())
+                    && self.machine.awaiting_teardown() != Some(session.as_str())
+                {
+                    tracing::warn!(
+                        %session, active = ?self.machine.active_session(),
+                        "status is for a session we are not tracking; path mismatch?"
+                    );
+                }
                 self.status_message = status.message.clone();
                 Some(Event::StatusChanged {
                     session_path: session,
