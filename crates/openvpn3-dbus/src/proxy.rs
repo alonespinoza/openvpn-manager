@@ -54,6 +54,12 @@ pub trait Configuration {
     #[zbus(property(emits_changed_signal = "false"), name = "name")]
     fn name(&self) -> zbus::Result<String>;
 
+    /// Rename. zbus does not derive setters from a getter — they are declared.
+    /// `name` is the one writable property here; this is the same path
+    /// `openvpn3 config-manage --rename` takes.
+    #[zbus(property(emits_changed_signal = "false"), name = "name")]
+    fn set_name(&self, value: &str) -> zbus::Result<()>;
+
     #[zbus(property(emits_changed_signal = "false"), name = "valid")]
     fn valid(&self) -> zbus::Result<bool>;
 
