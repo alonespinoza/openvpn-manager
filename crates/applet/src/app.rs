@@ -26,6 +26,14 @@ pub struct App {
     popup: Option<Id>,
     auth_window: Option<Id>,
     log_window: Option<Id>,
+    manage_window: Option<Id>,
+
+    /// Profile currently open in the manage window.
+    managing: Option<Profile>,
+    rename_value: String,
+    /// Delete is two-step: the button arms before it acts. A destructive,
+    /// irreversible action one click away in a menu is too easy to hit.
+    delete_armed: bool,
 
     /// Prompt field values, keyed by input-queue id. Cleared on close (R9).
     field_values: HashMap<u32, String>,
@@ -47,6 +55,13 @@ pub enum Message {
 
     OpenLog,
     CloseLog,
+
+    ManageProfile(String),
+    CloseManage,
+    RenameChanged(String),
+    ConfirmRename,
+    ArmDelete,
+    ConfirmDelete,
 
     FieldChanged(u32, String),
     SubmitPrompt,
@@ -80,6 +95,10 @@ impl Application for App {
                 popup: None,
                 auth_window: None,
                 log_window: None,
+                manage_window: None,
+                managing: None,
+                rename_value: String::new(),
+                delete_armed: false,
                 field_values: HashMap::new(),
             },
             Task::none(),
@@ -154,6 +173,10 @@ impl Application for App {
                     self.popup = None;
                 } else if self.log_window == Some(id) {
                     self.log_window = None;
+                } else if self.manage_window == Some(id) {
+                    self.manage_window = None;
+                    self.managing = None;
+                    self.delete_armed = false;
                 } else if self.auth_window == Some(id) {
                     // Closing the window is a cancel, not a dismiss. Leaving the
                     // session parked in auth-pending with no window to return
@@ -196,6 +219,53 @@ impl Application for App {
             }
 
             Message::CloseLog => return self.close_log_window(),
+
+            Message::ManageProfile(config_path) => {
+                let Some(profile) = self
+                    .snapshot
+                    .profiles
+                    .iter()
+                    .find(|p| p.config_path == config_path)
+                    .cloned()
+                else {
+                    return Task::none();
+                };
+                self.rename_value = profile.name.clone();
+                self.managing = Some(profile);
+                self.delete_armed = false;
+                let close = self.close_popup();
+                return Task::batch([close, self.open_manage_window()]);
+            }
+
+            Message::CloseManage => return self.close_manage_window(),
+
+            Message::RenameChanged(value) => {
+                self.rename_value = value;
+                // Editing the name is a signal the user is not here to delete.
+                self.delete_armed = false;
+            }
+
+            Message::ConfirmRename => {
+                if let Some(profile) = &self.managing {
+                    let new_name = self.rename_value.trim().to_owned();
+                    if !new_name.is_empty() && new_name != profile.name {
+                        self.send(UiCommand::RenameProfile {
+                            config_path: profile.config_path.clone(),
+                            new_name,
+                        });
+                    }
+                }
+                return self.close_manage_window();
+            }
+
+            Message::ArmDelete => self.delete_armed = true,
+
+            Message::ConfirmDelete => {
+                if let Some(profile) = &self.managing {
+                    self.send(UiCommand::DeleteProfile(profile.config_path.clone()));
+                }
+                return self.close_manage_window();
+            }
 
             Message::FieldChanged(id, value) => {
                 self.field_values.insert(id, value);
@@ -250,6 +320,8 @@ impl Application for App {
             self.view_auth()
         } else if self.log_window == Some(id) {
             self.view_log()
+        } else if self.manage_window == Some(id) {
+            self.view_manage()
         } else {
             widget::text("").into()
         }
@@ -302,6 +374,28 @@ impl App {
             // `close` is generic over the message type: it emits nothing, so it
             // unifies with our task type directly. Adding a `.then` only made
             // the closure's parameter unconstrained.
+            Some(id) => window::close(id),
+            None => Task::none(),
+        }
+    }
+
+    fn open_manage_window(&mut self) -> Task<Message> {
+        if self.manage_window.is_some() {
+            return Task::none();
+        }
+        let (id, task) = window::open(window::Settings {
+            size: cosmic::iced::Size::new(420.0, 260.0),
+            resizable: false,
+            ..Default::default()
+        });
+        self.manage_window = Some(id);
+        task.then(|_| Task::none())
+    }
+
+    fn close_manage_window(&mut self) -> Task<Message> {
+        self.managing = None;
+        self.delete_armed = false;
+        match self.manage_window.take() {
             Some(id) => window::close(id),
             None => Task::none(),
         }
@@ -437,6 +531,77 @@ impl App {
                     .push(widget::text::caption(status)),
             )
             .push(widget::button::text(label).on_press(message))
+            .push(
+                widget::button::text("…")
+                    .on_press(Message::ManageProfile(profile.config_path.clone())),
+            )
+            .into()
+    }
+
+    /// Rename and delete for one profile (R4-adjacent; both were deferred in the
+    /// original plan and pulled in later).
+    fn view_manage(&self) -> Element<'_, Message> {
+        let Some(profile) = &self.managing else {
+            return widget::text("").into();
+        };
+
+        let is_active = self.snapshot.active_config.as_deref() == Some(&profile.config_path);
+        let renamed = self.rename_value.trim() != profile.name && !self.rename_value.trim().is_empty();
+
+        let mut rename_button = widget::button::suggested("Rename");
+        if renamed {
+            rename_button = rename_button.on_press(Message::ConfirmRename);
+        }
+
+        let mut content = widget::column::with_capacity(8)
+            .spacing(12)
+            .padding(20)
+            .push(widget::text::title3("Manage profile"))
+            .push(
+                widget::text_input("Profile name", &self.rename_value)
+                    .on_input(Message::RenameChanged)
+                    .on_submit(|_| Message::ConfirmRename),
+            )
+            .push(rename_button)
+            .push(widget::divider::horizontal::default());
+
+        // Deleting a profile out from under a live session orphans it and leaves
+        // the menu describing something gone. Refuse and say why, rather than
+        // tearing down their tunnel as a side effect of a delete.
+        if is_active {
+            content = content.push(widget::text::body(
+                "This profile is in use. Disconnect it before deleting.",
+            ));
+        } else if self.delete_armed {
+            content = content
+                .push(widget::text::body(format!(
+                    "Delete “{}”? This cannot be undone.",
+                    profile.name
+                )))
+                .push(
+                    widget::row::with_capacity(2)
+                        .spacing(8)
+                        .push(
+                            widget::button::text("Cancel").on_press(Message::RenameChanged(
+                                self.rename_value.clone(),
+                            )),
+                        )
+                        .push(
+                            widget::button::destructive("Delete")
+                                .on_press(Message::ConfirmDelete),
+                        ),
+                );
+        } else {
+            content = content
+                .push(widget::button::destructive("Delete profile…").on_press(Message::ArmDelete));
+        }
+
+        if let Some(error) = &self.snapshot.unavailable {
+            content = content.push(widget::text::caption(error));
+        }
+
+        content
+            .push(widget::button::text("Close").on_press(Message::CloseManage))
             .into()
     }
 

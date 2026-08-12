@@ -70,6 +70,8 @@ pub enum UiCommand {
     SubmitPrompt(Vec<InputResponse>),
     CancelPrompt,
     Import(PathBuf),
+    RenameProfile { config_path: String, new_name: String },
+    DeleteProfile(String),
     DismissFailure,
     RefreshProfiles,
 }
@@ -539,6 +541,17 @@ impl Worker {
                 self.import(path).await;
                 None
             }
+            UiCommand::RenameProfile {
+                config_path,
+                new_name,
+            } => {
+                self.rename_profile(&config_path, &new_name).await;
+                None
+            }
+            UiCommand::DeleteProfile(config_path) => {
+                self.delete_profile(&config_path).await;
+                None
+            }
         };
 
         if let Some(event) = event {
@@ -788,6 +801,65 @@ impl Worker {
             }
         }
         fields
+    }
+
+    async fn config_proxy(&self, config_path: &str) -> Option<ConfigurationProxy<'static>> {
+        let path = OwnedObjectPath::try_from(config_path).ok()?;
+        ConfigurationProxy::builder(&self.connection)
+            .path(path)
+            .ok()?
+            .build()
+            .await
+            .ok()
+    }
+
+    async fn rename_profile(&mut self, config_path: &str, new_name: &str) {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            self.unavailable = Some("A profile name cannot be empty.".into());
+            return;
+        }
+
+        let Some(proxy) = self.config_proxy(config_path).await else {
+            self.unavailable = Some("That profile is no longer available.".into());
+            return;
+        };
+
+        // openvpn3 exposes rename as a writable `name` property; this is what
+        // `openvpn3 config-manage --rename` does underneath.
+        match proxy.set_name(new_name).await {
+            Ok(()) => {
+                self.unavailable = None;
+                self.refresh_profiles().await;
+            }
+            Err(error) => self.unavailable = Some(format!("Could not rename: {error}")),
+        }
+    }
+
+    async fn delete_profile(&mut self, config_path: &str) {
+        // Removing the profile out from under a running session leaves the
+        // session orphaned and the menu describing something that no longer
+        // exists. Make the user disconnect first rather than doing it for them —
+        // this is destructive and silently tearing down their tunnel is worse
+        // than refusing.
+        if self.machine.is_active_config(config_path) {
+            self.unavailable =
+                Some("Disconnect this profile before deleting it.".into());
+            return;
+        }
+
+        let Some(proxy) = self.config_proxy(config_path).await else {
+            self.unavailable = Some("That profile is no longer available.".into());
+            return;
+        };
+
+        match proxy.remove().await {
+            Ok(()) => {
+                self.unavailable = None;
+                self.refresh_profiles().await;
+            }
+            Err(error) => self.unavailable = Some(format!("Could not delete: {error}")),
+        }
     }
 
     async fn import(&mut self, path: PathBuf) {
