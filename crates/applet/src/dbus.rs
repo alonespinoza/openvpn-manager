@@ -19,6 +19,7 @@ use openvpn3_dbus::proxy::{
 };
 use openvpn3_dbus::status::{ConnectionState, Status};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -328,7 +329,13 @@ impl Worker {
     }
 
     /// Forward one session's three signal streams into the shared wire channel.
+    ///
+    /// Returns only once every subscription is actually registered on the bus.
+    /// This matters: `Connect` is issued straight after, and openvpn3 can reach
+    /// CONN_CONNECTED before a match rule that was still being set up. The icon
+    /// then waits forever for a signal that already came and went.
     async fn subscribe_session(&mut self, path: &OwnedObjectPath, wire: &mpsc::Sender<Wire>) {
+        let mut ready_signals = Vec::new();
         let Ok(session) = self.session_proxy(path).await else {
             return;
         };
@@ -336,8 +343,12 @@ impl Worker {
 
         {
             let (wire, key, session) = (wire.clone(), key.clone(), session.clone());
+            let (ready_tx, ready_rx) = oneshot::channel();
+            ready_signals.push(ready_rx);
             let handle = tokio::spawn(async move {
-                let mut stream = match session.receive_status_change().await {
+                let stream = session.receive_status_change().await;
+                let _ = ready_tx.send(());
+                let mut stream = match stream {
                     Ok(stream) => stream,
                     Err(error) => {
                         tracing::warn!(session = %key, %error, "no StatusChange subscription");
@@ -374,8 +385,13 @@ impl Worker {
 
         {
             let (wire, key, session) = (wire.clone(), key.clone(), session.clone());
+            let (ready_tx, ready_rx) = oneshot::channel();
+            ready_signals.push(ready_rx);
             let handle = tokio::spawn(async move {
-                let Ok(mut stream) = session.receive_attention_required().await else {
+                let stream = session.receive_attention_required().await;
+                let _ = ready_tx.send(());
+                let Ok(mut stream) = stream else {
+                    tracing::warn!(session = %key, "no AttentionRequired subscription");
                     return;
                 };
                 while let Some(signal) = stream.next().await {
@@ -395,8 +411,13 @@ impl Worker {
 
         {
             let (wire, key) = (wire.clone(), key.clone());
+            let (ready_tx, ready_rx) = oneshot::channel();
+            ready_signals.push(ready_rx);
             let handle = tokio::spawn(async move {
-                let Ok(mut stream) = session.receive_log().await else {
+                let stream = session.receive_log().await;
+                let _ = ready_tx.send(());
+                let Ok(mut stream) = stream else {
+                    tracing::warn!(session = %key, "no Log subscription");
                     return;
                 };
                 while let Some(signal) = stream.next().await {
@@ -415,6 +436,11 @@ impl Worker {
             });
             self.forwarders.push(handle.abort_handle());
         }
+
+        for ready in ready_signals {
+            let _ = ready.await;
+        }
+        tracing::debug!(session = %key, "all signal subscriptions established");
     }
 
     // --------------------------------------------------------------- events
