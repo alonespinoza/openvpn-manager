@@ -361,8 +361,10 @@ impl App {
             return Task::none();
         }
         let (id, task) = window::open(window::Settings {
-            size: cosmic::iced::Size::new(420.0, 280.0),
+            size: cosmic::iced::Size::new(420.0, 300.0),
             resizable: false,
+            decorations: true,
+            transparent: false,
             ..Default::default()
         });
         self.auth_window = Some(id);
@@ -379,13 +381,30 @@ impl App {
         }
     }
 
+    /// Paint a window background and fill the surface.
+    ///
+    /// An applet's own surface is a panel button, so nothing in the chain draws
+    /// a window background for a secondary toplevel. Without this the window
+    /// renders transparent and unclickable.
+    fn window_shell<'a>(
+        content: impl Into<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        widget::container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .class(cosmic::theme::Container::WindowBackground)
+            .into()
+    }
+
     fn open_manage_window(&mut self) -> Task<Message> {
         if self.manage_window.is_some() {
             return Task::none();
         }
         let (id, task) = window::open(window::Settings {
-            size: cosmic::iced::Size::new(420.0, 260.0),
+            size: cosmic::iced::Size::new(420.0, 300.0),
             resizable: false,
+            decorations: true,
+            transparent: false,
             ..Default::default()
         });
         self.manage_window = Some(id);
@@ -408,6 +427,8 @@ impl App {
         let (id, task) = window::open(window::Settings {
             size: cosmic::iced::Size::new(720.0, 480.0),
             resizable: true,
+            decorations: true,
+            transparent: false,
             ..Default::default()
         });
         self.log_window = Some(id);
@@ -600,9 +621,9 @@ impl App {
             content = content.push(widget::text::caption(error));
         }
 
-        content
-            .push(widget::button::text("Close").on_press(Message::CloseManage))
-            .into()
+        Self::window_shell(
+            content.push(widget::button::text("Close").on_press(Message::CloseManage)),
+        )
     }
 
     // -------------------------------------------------------- the two windows
@@ -653,7 +674,7 @@ impl App {
                 .push(widget::button::suggested("Connect").on_press(Message::SubmitPrompt)),
         );
 
-        content.into()
+        Self::window_shell(content)
     }
 
     /// R13 — read-only, most recent attempt.
@@ -674,13 +695,14 @@ impl App {
             .into(),
         };
 
-        widget::column::with_capacity(3)
-            .spacing(12)
-            .padding(20)
-            .push(widget::text::title3("Session log"))
-            .push(body)
-            .push(widget::button::text("Close").on_press(Message::CloseLog))
-            .into()
+        Self::window_shell(
+            widget::column::with_capacity(3)
+                .spacing(12)
+                .padding(20)
+                .push(widget::text::title3("Session log"))
+                .push(body)
+                .push(widget::button::text("Close").on_press(Message::CloseLog)),
+        )
     }
 }
 
