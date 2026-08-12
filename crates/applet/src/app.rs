@@ -564,14 +564,19 @@ async fn pick_ovpn_file() -> Option<std::path::PathBuf> {
         .and_then(|uri| uri.to_file_path().ok())
 }
 
-fn worker_stream() -> impl futures_util::Stream<Item = Message> {
-    cosmic::iced::stream::channel(64, |mut output| async move {
+fn worker_stream() -> impl cosmic::iced::futures::Stream<Item = Message> {
+    // Go through iced's own futures re-export rather than a separate
+    // futures-util dependency, so the Sender and the SinkExt in scope are
+    // guaranteed to be the same crate version.
+    use cosmic::iced::futures::SinkExt;
+    use cosmic::iced::futures::channel::mpsc as iced_mpsc;
+
+    cosmic::iced::stream::channel(64, |mut output: iced_mpsc::Sender<Message>| async move {
         let (command_tx, command_rx) = mpsc::channel(32);
         let (snapshot_tx, mut snapshot_rx) = mpsc::channel(32);
 
         tokio::spawn(dbus::run(command_rx, snapshot_tx));
 
-        use futures_util::SinkExt;
         let _ = output.send(Message::WorkerReady(command_tx)).await;
 
         while let Some(snapshot) = snapshot_rx.recv().await {
