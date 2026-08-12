@@ -119,6 +119,14 @@ pub async fn run(mut commands: mpsc::Receiver<UiCommand>, snapshots: mpsc::Sende
 
     let (wire_tx, mut wire_rx) = mpsc::channel(256);
 
+    // Signals stay the primary path, but a connect that reaches CONN_CONNECTED
+    // while a signal goes astray would leave the icon claiming "connecting"
+    // indefinitely — the trusted-and-wrong display the whole design rejects.
+    // This ticks only while a transition is actually in flight and goes idle the
+    // moment it settles, so it is a bounded safety net rather than polling.
+    let mut settle = tokio::time::interval(std::time::Duration::from_millis(400));
+    settle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     worker.refresh_profiles().await;
     worker.adopt_existing_sessions(&wire_tx).await;
     worker.watch_session_manager(&wire_tx).await;
@@ -133,6 +141,16 @@ pub async fn run(mut commands: mpsc::Receiver<UiCommand>, snapshots: mpsc::Sende
             Some(wire) = wire_rx.recv() => {
                 worker.on_wire(wire, &wire_tx).await;
                 worker.publish(&snapshots).await;
+            }
+            _ = settle.tick(), if worker.transition_in_flight() => {
+                let before = worker.machine.state();
+                worker.reconcile_teardown(&wire_tx).await;
+                worker.reconcile_active_status(&wire_tx).await;
+                if worker.machine.state() != before {
+                    tracing::debug!(?before, after = ?worker.machine.state(),
+                        "settled a transition the signal did not report");
+                    worker.publish(&snapshots).await;
+                }
             }
             else => break,
         }
@@ -153,6 +171,13 @@ struct Worker {
 }
 
 impl Worker {
+    /// Is the applet mid-transition, i.e. is the display expected to change on
+    /// its own shortly? Settled states need no watching.
+    fn transition_in_flight(&self) -> bool {
+        self.machine.awaiting_teardown().is_some()
+            || matches!(self.machine.state(), ConnectionState::Connecting)
+    }
+
     async fn publish(&self, snapshots: &mpsc::Sender<Snapshot>) {
         let log = match self.logs.most_recent() {
             SessionLog::Captured { entries, .. } => {
