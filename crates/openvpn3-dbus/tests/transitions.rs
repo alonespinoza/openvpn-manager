@@ -120,8 +120,7 @@ fn missing_credentials_open_the_prompt_and_do_not_connect() {
 
     let commands = m.handle(Event::CredentialsRequired {
         session_path: "/s/1".into(),
-        r#type: Type::Credentials,
-        group: Group::UserPassword,
+        requests: vec![(Type::Credentials, Group::UserPassword)],
         message: String::new(),
     });
 
@@ -145,8 +144,7 @@ fn submitting_credentials_rechecks_readiness_rather_than_connecting_blind() {
     let mut m = machine_starting("/cfg/a", "/s/1");
     m.handle(Event::CredentialsRequired {
         session_path: "/s/1".into(),
-        r#type: Type::Credentials,
-        group: Group::UserPassword,
+        requests: vec![(Type::Credentials, Group::UserPassword)],
         message: String::new(),
     });
 
@@ -640,8 +638,7 @@ fn closing_the_first_prompt_cannot_clobber_a_second_one() {
     let mut m = machine_starting("/cfg/a", "/s/1");
     m.handle(Event::CredentialsRequired {
         session_path: "/s/1".into(),
-        r#type: Type::Credentials,
-        group: Group::UserPassword,
+        requests: vec![(Type::Credentials, Group::UserPassword)],
         message: String::new(),
     });
 
@@ -666,5 +663,54 @@ fn closing_the_first_prompt_cannot_clobber_a_second_one() {
     assert!(
         close < recheck,
         "the prompt must be closed before a re-check that may open another"
+    );
+}
+
+/// A profile with a static challenge queues two groups: the credentials and
+/// the code. Prompting for only the first is why the one-time code never
+/// appeared — the connect then stalls waiting on an answer nobody was asked for.
+#[test]
+fn every_queued_group_lands_in_one_prompt() {
+    let mut m = machine_starting("/cfg/a", "/s/1");
+
+    let commands = m.handle(Event::CredentialsRequired {
+        session_path: "/s/1".into(),
+        requests: vec![
+            (Type::Credentials, Group::UserPassword),
+            (Type::Credentials, Group::ChallengeStatic),
+        ],
+        message: String::new(),
+    });
+
+    match commands.as_slice() {
+        [Command::OpenPrompt { requests, .. }] => {
+            assert_eq!(requests.len(), 2, "both groups must reach the prompt");
+            assert!(requests.contains(&(Type::Credentials, Group::ChallengeStatic)));
+        }
+        other => panic!("expected a single OpenPrompt spanning both groups, got {other:?}"),
+    }
+}
+
+/// One unanswerable group fails the whole attempt rather than collecting input
+/// the connect can never use (KTD8).
+#[test]
+fn an_unsupported_group_fails_the_whole_request() {
+    let mut m = machine_starting("/cfg/a", "/s/1");
+
+    let commands = m.handle(Event::CredentialsRequired {
+        session_path: "/s/1".into(),
+        requests: vec![
+            (Type::Credentials, Group::UserPassword),
+            (Type::Credentials, Group::OpenUrl),
+        ],
+        message: String::new(),
+    });
+
+    assert_eq!(m.state(), ConnectionState::Failed);
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::OpenPrompt { .. })),
+        "no prompt should open when one group cannot be answered"
     );
 }

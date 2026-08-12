@@ -125,9 +125,16 @@ pub struct InputRequest {
     pub hidden_input: bool,
 }
 
-/// A single field to render in the prompt window.
+/// A single field to render in the prompt.
+///
+/// Carries its own type and group: one form can span several queued groups —
+/// a username and password sit in `USER_PASSWORD` while the one-time code sits
+/// in `CHALLENGE_STATIC` — and each answer has to go back to the group that
+/// asked for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptField {
+    pub r#type: ClientAttentionType,
+    pub group: ClientAttentionGroup,
     pub id: u32,
     pub name: String,
     pub label: String,
@@ -145,6 +152,8 @@ impl InputRequest {
         };
 
         PromptField {
+            r#type: self.type_,
+            group: self.group,
             id: self.id,
             name: self.name.clone(),
             label,

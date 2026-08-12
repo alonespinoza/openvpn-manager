@@ -39,9 +39,9 @@ pub struct Profile {
 pub struct PromptSpec {
     pub session_path: String,
     pub kind: PromptKind,
-    pub r#type: ClientAttentionType,
-    pub group: ClientAttentionGroup,
     pub message: String,
+    /// May span several queued groups; each field carries its own so the answer
+    /// goes back to whichever group asked for it.
     pub fields: Vec<PromptField>,
 }
 
@@ -211,12 +211,23 @@ impl Worker {
     async fn refresh_profiles(&mut self) {
         let manager = match ConfigurationManagerProxy::new(&self.connection).await {
             Ok(manager) => manager,
-            Err(error) => return self.mark_unavailable(error),
+            Err(error) => return self.mark_unavailable(error).await,
         };
 
+        // openvpn3's services are idle-activated: they shut themselves down
+        // after a period of inactivity and D-Bus starts them again on the next
+        // call. The first call after an idle-out can fail while that happens, so
+        // one failure is not evidence of anything. Retry before saying so.
         let paths = match manager.fetch_available_configs().await {
             Ok(paths) => paths,
-            Err(error) => return self.mark_unavailable(error),
+            Err(first) => {
+                tracing::debug!(error = %first, "config fetch failed; retrying once");
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                match manager.fetch_available_configs().await {
+                    Ok(paths) => paths,
+                    Err(error) => return self.mark_unavailable(error).await,
+                }
+            }
         };
 
         self.unavailable = None;
@@ -267,12 +278,12 @@ impl Worker {
         }
     }
 
-    fn mark_unavailable(&mut self, error: zbus::Error) {
+    async fn mark_unavailable(&mut self, error: zbus::Error) {
         // "Not installed" and "installed but not answering" need different
         // fixes, and the applet is the only thing in a position to tell them
         // apart. Saying "openvpn3 is unavailable" for both leaves the user to
         // guess which problem they have.
-        self.unavailable = Some(if openvpn3_on_path() {
+        self.unavailable = Some(if self.openvpn3_installed().await {
             format!(
                 "openvpn3 is installed but its services are not answering on the \
                  D-Bus system bus ({error}). Try `openvpn3 configs-list` in a \
@@ -285,6 +296,26 @@ impl Worker {
                 .to_owned()
         });
         self.profiles.clear();
+    }
+
+    /// Is openvpn3 installed, as opposed to merely not answering right now?
+    ///
+    /// Asks D-Bus whether the service is activatable — that is, whether its
+    /// service file is on disk. Checking PATH was the wrong test: the applet is
+    /// spawned by cosmic-panel and inherits whatever PATH the session gives it,
+    /// so a perfectly installed openvpn3 could look absent and produce a
+    /// confident, wrong "not installed".
+    async fn openvpn3_installed(&self) -> bool {
+        let Ok(dbus) = zbus::fdo::DBusProxy::new(&self.connection).await else {
+            return true; // Cannot tell — do not claim it is missing.
+        };
+
+        match dbus.list_activatable_names().await {
+            Ok(names) => names
+                .iter()
+                .any(|name| name.as_str().starts_with("net.openvpn.v3.")),
+            Err(_) => true,
+        }
     }
 
     // ------------------------------------------------------------- sessions
@@ -704,16 +735,20 @@ impl Worker {
                 Command::OpenPrompt {
                     session_path,
                     kind,
-                    r#type,
-                    group,
+                    requests,
                     message,
                 } => {
-                    let fields = self.drain_input_queue(&session_path, r#type, group).await;
+                    let mut fields = Vec::new();
+                    for (r#type, group) in requests {
+                        fields.extend(
+                            self.drain_input_queue(&session_path, r#type, group).await,
+                        );
+                    }
+                    tracing::debug!(%session_path, count = fields.len(), "prompt fields");
+
                     self.prompt = Some(PromptSpec {
                         session_path,
                         kind,
-                        r#type,
-                        group,
                         message,
                         fields,
                     });
@@ -799,32 +834,41 @@ impl Worker {
                     return None;
                 };
 
-                let Some((r#type, group)) = pairs.first().copied() else {
+                if pairs.is_empty() {
                     // Not ready, and nothing queued to fix it. Report it rather
                     // than waiting on a request that is never coming.
                     self.logs
                         .note(session_path, format!("Backend not ready: {error}"));
                     return None;
-                };
+                }
 
-                match (
-                    ClientAttentionType::try_from(r#type as u8),
-                    ClientAttentionGroup::try_from(group as u8),
-                ) {
-                    (Ok(r#type), Ok(group)) => Some(Event::CredentialsRequired {
-                        session_path: session_path.to_owned(),
-                        r#type,
-                        group,
-                        message: String::new(),
-                    }),
-                    _ => {
-                        self.logs.note(
+                // Every queued group, not just the first. A profile with a
+                // static challenge queues two — credentials and the code — and
+                // answering only one leaves the connect stalled on the other.
+                let mut requests = Vec::with_capacity(pairs.len());
+                for (r#type, group) in pairs {
+                    match (
+                        ClientAttentionType::try_from(r#type as u8),
+                        ClientAttentionGroup::try_from(group as u8),
+                    ) {
+                        (Ok(r#type), Ok(group)) => requests.push((r#type, group)),
+                        _ => self.logs.note(
                             session_path,
                             format!("Unrecognised credential request: type={type} group={group}"),
-                        );
-                        None
+                        ),
                     }
                 }
+                tracing::debug!(%session_path, ?requests, "credentials requested");
+
+                if requests.is_empty() {
+                    return None;
+                }
+
+                Some(Event::CredentialsRequired {
+                    session_path: session_path.to_owned(),
+                    requests,
+                    message: String::new(),
+                })
             }
         }
     }
@@ -996,20 +1040,6 @@ impl Worker {
             }
         }
     }
-}
-
-/// Is the `openvpn3` command on PATH?
-///
-/// Deliberately only a check. Installing a system package needs root, and R15
-/// exists so this applet never has a privilege-escalation path — a tray icon
-/// that can install packages is a tray icon that can install anything. Telling
-/// the user the command to run is where its responsibility ends.
-fn openvpn3_on_path() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-
-    std::env::split_paths(&path).any(|dir| dir.join("openvpn3").is_file())
 }
 
 fn now_epoch() -> u64 {

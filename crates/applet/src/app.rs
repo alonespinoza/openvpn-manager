@@ -261,8 +261,10 @@ impl Application for App {
                     .fields
                     .iter()
                     .map(|field| InputResponse {
-                        r#type: prompt.r#type,
-                        group: prompt.group,
+                        // Per-field, not per-prompt: one form can span the
+                        // credentials group and the challenge group at once.
+                        r#type: field.r#type,
+                        group: field.group,
                         id: field.id,
                         value: self.field_values.get(&field.id).cloned().unwrap_or_default(),
                     })

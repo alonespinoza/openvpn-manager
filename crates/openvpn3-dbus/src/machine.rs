@@ -27,10 +27,13 @@ pub enum Event {
     /// `Ready` reported missing credentials, and the input queue says what for.
     /// This is how a username/password profile asks: up front, not as an
     /// `AttentionRequired` signal mid-handshake.
+    ///
+    /// `requests` is every queued `(type, group)`, not just the first. A profile
+    /// with a static challenge queues two — credentials and the code — and
+    /// answering only one leaves the connect stalled on the other.
     CredentialsRequired {
         session_path: String,
-        r#type: ClientAttentionType,
-        group: ClientAttentionGroup,
+        requests: Vec<(ClientAttentionType, ClientAttentionGroup)>,
         message: String,
     },
     /// A session the applet did not start, seen at startup or via
@@ -90,12 +93,11 @@ pub enum Command {
     Disconnect {
         session_path: String,
     },
-    /// Drain the input queue and open the prompt window.
+    /// Drain the listed queue groups and open one prompt covering all of them.
     OpenPrompt {
         session_path: String,
         kind: PromptKind,
-        r#type: ClientAttentionType,
-        group: ClientAttentionGroup,
+        requests: Vec<(ClientAttentionType, ClientAttentionGroup)>,
         message: String,
     },
     ClosePrompt,
@@ -181,10 +183,9 @@ impl Machine {
             Event::SessionReady { session_path } => self.on_session_ready(session_path),
             Event::CredentialsRequired {
                 session_path,
-                r#type,
-                group,
+                requests,
                 message,
-            } => self.on_attention(session_path, r#type, group, message),
+            } => self.on_credentials_required(session_path, requests, message),
             Event::ExternalSessionSeen {
                 session_path,
                 config_path,
@@ -200,7 +201,7 @@ impl Machine {
                 r#type,
                 group,
                 message,
-            } => self.on_attention(session_path, r#type, group, message),
+            } => self.on_credentials_required(session_path, vec![(r#type, group)], message),
             Event::PromptSubmitted {
                 session_path,
                 responses,
@@ -386,11 +387,10 @@ impl Machine {
 
     // ------------------------------------------------------------- attention
 
-    fn on_attention(
+    fn on_credentials_required(
         &mut self,
         session_path: String,
-        r#type: ClientAttentionType,
-        group: ClientAttentionGroup,
+        requests: Vec<(ClientAttentionType, ClientAttentionGroup)>,
         message: String,
     ) -> Vec<Command> {
         if self.active_session() != Some(session_path.as_str()) {
@@ -399,37 +399,41 @@ impl Machine {
 
         // The user already dismissed this attempt; a late or duplicate signal
         // must not resurrect the window.
-        if self.prompt_open {
+        if self.prompt_open || requests.is_empty() {
             return vec![];
         }
 
-        match route_attention(r#type, group) {
-            AttentionRouting::Prompt(kind) => {
-                self.state = ConnectionState::AuthPending;
-                self.prompt_open = true;
-                vec![Command::OpenPrompt {
-                    session_path,
-                    kind,
-                    r#type,
-                    group,
-                    message,
-                }]
-            }
-            // KTD8: fail loudly. Leaving this unanswered parks the session
-            // behind a "connecting" icon with no way to learn why.
-            AttentionRouting::Unsupported { reason } => {
+        // KTD8: one unanswerable group fails the whole attempt. Prompting for
+        // the rest would collect input the connect can never use.
+        for &(r#type, group) in &requests {
+            if let AttentionRouting::Unsupported { reason } = route_attention(r#type, group) {
                 self.state = ConnectionState::Failed;
                 self.active = None;
                 self.awaiting_teardown = Some(session_path.clone());
-                vec![
+                return vec![
                     Command::Note {
                         session_path: session_path.clone(),
                         message: reason,
                     },
                     Command::Disconnect { session_path },
-                ]
+                ];
             }
         }
+
+        // The heading comes from the first group; the form spans them all.
+        let kind = match route_attention(requests[0].0, requests[0].1) {
+            AttentionRouting::Prompt(kind) => kind,
+            AttentionRouting::Unsupported { .. } => unreachable!("checked above"),
+        };
+
+        self.state = ConnectionState::AuthPending;
+        self.prompt_open = true;
+        vec![Command::OpenPrompt {
+            session_path,
+            kind,
+            requests,
+            message,
+        }]
     }
 
     fn on_prompt_submitted(
